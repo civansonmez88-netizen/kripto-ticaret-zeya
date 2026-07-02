@@ -26,7 +26,7 @@ def gercek_veri_hazirla(symbol):
         yf_symbol = symbol.replace("USDT", "-USD")
         
         # Verileri Amerika engeline takılmayan Yahoo Finance üzerinden çekiyoruz
-        veri = yf.Ticker(yf_symbol).history(period="2d", interval="1h").tail(24)
+        veri = yf.Ticker(yf_symbol).history(period="5d", interval="1h").tail(60)
         
         kapanis_fiyatlari = veri['Close'].tolist()
         df = pd.DataFrame(kapanis_fiyatlari, columns=['close'])
