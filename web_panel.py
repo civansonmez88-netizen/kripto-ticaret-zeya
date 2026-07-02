@@ -20,14 +20,15 @@ st.sidebar.info("Tarama Yapılan: BTC, ETH, SOL")
 # GERÇEK ZAMANLI VERİ ÇEKME FONKSİYONU
 def gercek_veri_hazirla(symbol):
     try:
-        # Binance API'sinden son 24 saatlik (1 saatlik mumlar - 24 adet) gerçek veriyi çekiyoruz
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=24"
-        cevap = requests.get(url).json()
+        import yfinance as yf
+        # Binance formatını (BTCUSDT) Yahoo formatına (BTC-USD) çeviriyoruz
+        yf_symbol = symbol.replace("USDT", "-USD")
         
-        # Gelen veriyi tabloya dönüştürüyoruz
-        kapanis_fiyatlari = [float(mum[4]) for mum in cevap]
+        # Verileri Amerika engeline takılmayan Yahoo Finance üzerinden çekiyoruz
+        veri = yf.Ticker(yf_symbol).history(period="2d", interval="1h").tail(24)
+        
+        kapanis_fiyatlari = veri['Close'].tolist()
         df = pd.DataFrame(kapanis_fiyatlari, columns=['close'])
-        
         anlik_fiyat = kapanis_fiyatlari[-1]
         
         # Gerçek İndikatör Hesaplamaları
