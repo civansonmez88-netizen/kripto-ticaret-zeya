@@ -10,6 +10,16 @@ from ta.trend import MACD, EMAIndicator
 # SAYFA GENİŞLİK VE MARKA AYARLARI
 st.set_page_config(page_title="ZEYA - Yapay Zeka Kripto Ticaret Paneli", page_icon="Z", layout="wide")
 
+# STREAMLIT'E DAİR TÜM LOGO VE YAZILARI GİZLEYEN GİZLİ ZIRH KODU (CSS)
+st.markdown("""
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    stDecoration {display:none !important;}
+    </style>
+""", unsafe_allow_html=True)
+
 # SİYAH ÜZERİNE ALTIN RENKLİ "ZEYA" LOGO TASARIMI
 st.markdown("""
     <div style='text-align: center; background-color: #111111; padding: 20px; border-radius: 15px; border: 1px solid #D4AF37; margin-bottom: 25px;'>
@@ -31,20 +41,15 @@ st.sidebar.info("Tarama Yapılan: BTC, ETH, SOL")
 def gercek_veri_hazirla(symbol):
     try:
         import yfinance as yf
-        # Binance formatını (BTCUSDT) Yahoo formatına (BTC-USD) çeviriyoruz
         yf_symbol = symbol.replace("USDT", "-USD")
-        
-        # Verileri 5 günlük çekip son 60 saati (indikatörlerin hesaplanabilmesi için) alıyoruz
         veri = yf.Ticker(yf_symbol).history(period="5d", interval="1h").tail(60)
         
         kapanis_fiyatlari = veri['Close'].tolist()
         df = pd.DataFrame(kapanis_fiyatlari, columns=['close'])
         anlik_fiyat = kapanis_fiyatlari[-1]
         
-        # Gerçek İndikatör Hesaplamaları
         df['rsi'] = RSIIndicator(close=df['close'], window=14).rsi()
         
-        # Gelişmiş Trend ve Hız Hesaplamaları (Altyapı)
         macd_api = MACD(close=df['close'])
         df['macd'] = macd_api.macd()
         df['macd_sinyal'] = macd_api.macd_signal()
@@ -52,14 +57,12 @@ def gercek_veri_hazirla(symbol):
         df['ema_20'] = EMAIndicator(close=df['close'], window=20).ema_indicator()
         df['bb_alt'] = BollingerBands(close=df['close'], window=20, window_dev=2).bollinger_lband()
         
-        # ML Trend Eğimi (Son 24 saatlik gerçek yön)
         X = np.array(range(len(df))).reshape(-1, 1)
         model = LinearRegression().fit(X, df['close'])
         egim = model.coef_[0]
         
         return anlik_fiyat, df['rsi'].iloc[-1], df['bb_alt'].iloc[-1], egim, df
     except Exception as e:
-        # Hata durumunda güvenlik zırhı
         return 0.0, 50.0, 0.0, 0.0, pd.DataFrame([0]*60, columns=['close'])
 
 # ÜÇ COIN İÇİN GERÇEK VERİLERİ ALALIM
