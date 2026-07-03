@@ -26,24 +26,46 @@ if "seyir_defteri" not in st.session_state:
         "Zaman Damgası", "Parite", "İşlem Tipi", "Fiyat (USDT)", "Miktar", "Toplam Tutar", "Kasa Bakiyesi", "Açıklama"
     ])
 
-# --- 4. ASIL UYGULAMANIN VERİ MOTORU ---
-@st.cache_data(ttl=60)
+# --- 4. ASIL UYGULAMANIN GELİŞTİRİLMİŞ VERİ MOTORU (YEDEK BAĞLANTILI) ---
+@st.cache_data(ttl=30)  # TTL süresini 30 saniyeye düşürerek verinin taze kalmasını sağlıyoruz
 def get_binance_data(symbol="BTCUSDT", interval="15m", limit=200):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    try:
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        df = pd.DataFrame(data, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_av', 'trades', 'tb_base_av', 'tb_quote_av', 'ignore'
-        ])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms') + timedelta(hours=3)
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
-        return df
-    except Exception as e:
-        st.error(f"Binance API Bağlantı Hatası: {e}")
-        return pd.DataFrame()
+    # Birinci öncelikli resmi API ucu ve yedek API uçları
+    urls = [
+        f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://api1.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://api3.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    ]
+    
+    for url in urls:
+        try:
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                df = pd.DataFrame(data, columns=[
+                    'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                    'close_time', 'quote_av', 'trades', 'tb_base_av', 'tb_quote_av', 'ignore'
+                ])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms') + timedelta(hours=3)
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    df[col] = df[col].astype(float)
+                return df
+            elif response.status_code == 429:
+                st.warning(f"⚠️ Binance istek sınırı (Rate Limit) uyarısı verdi. Yedek kanala geçiliyor...")
+        except Exception:
+            continue # Bir url çökerse diğerine geç
+            
+    # Eğer tüm uçlar başarısız olursa arayüzde çökme olmaması için simüle yapay veri üret (Grafikler boş kalmasın)
+    st.sidebar.error(f"⚠️ {symbol} için Canlı Binance Bağlantısı Kurulamadı! Yedek Grafik Modu Aktif.")
+    saat_serisi = [datetime.now() - timedelta(minutes=15*i) for i in range(limit)][::-1]
+    df_fake = pd.DataFrame({
+        'timestamp': saat_serisi,
+        'open': np.linspace(95000, 96000, limit),
+        'high': np.linspace(95500, 96500, limit),
+        'low': np.linspace(94500, 95500, limit),
+        'close': np.linspace(95000, 96000, limit) + np.random.normal(0, 100, limit),
+        'volume': np.random.uniform(10, 100, limit)
+    })
+    return df_fake
 
 # --- 5. ASIL UYGULAMANIN TEKNİK ANALİZ VE YAPAY ZEKA MODELİ ---
 def analiz_et_ve_karar_ver(df):
@@ -156,7 +178,7 @@ def simule_cuzdan_motoru(symbol, son_fiyat, karar, guven_orani):
             st.session_state.seyir_defteri = pd.concat([yeni_log, st.session_state.seyir_defteri], ignore_index=True)
 
 # --- 7. BİREBİR ASIL UYGULAMA ARAYÜZÜ VE YENİ METRİKLER ---
-st.title("🪙 ZEYA QUANT ALGORİTMASI SİMÜLASYONU")
+st.title("⚡ ZEYA QUANT ALGORİTMASI SİMÜLASYONU")
 st.subheader("Yapay Zeka ve Matematiksel Risk Yönetim Motoru")
 
 # Şık ve modern metrik alanı
@@ -189,7 +211,7 @@ for parite in pariteler:
         with p_col1:
             st.markdown(f"### 📈 {parite} 15 Dakikalık Canlı Grafik")
         with p_col2:
-            st.metric(label="Anlık Fiyat", value=f"{son_fiyat} USDT")
+            st.metric(label="Anlık Fiyat", value=f"{round(son_fiyat, 2)} USDT")
         with p_col3:
             renk = "🟢" if karar == "AL" else "🔴" if karar == "SAT" else "⚪"
             st.metric(label="ZEYA Kararı", value=f"{renk} {karar}", delta=f"Güven: %{int(guven_orani)}")
