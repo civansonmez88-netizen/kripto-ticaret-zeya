@@ -115,7 +115,8 @@ def gercek_veri_ve_islem_hazirla(symbol):
     try:
         import yfinance as yf
         yf_symbol = symbol.replace("USDT", "-USD")
-        veri = yf.Ticker(yf_symbol).history(period="5d", interval="1h").tail(60)
+        # 🚀 15 DAKİKALIK HİPER AKTİF ZAMAN DİLİMİ AYARLANDI
+        veri = yf.Ticker(yf_symbol).history(period="5d", interval="15m").tail(60)
         
         kapanis_fiyatlari = veri['Close'].tolist()
         df = pd.DataFrame(kapanis_fiyatlari, columns=['close'])
@@ -187,7 +188,7 @@ with col3:
     st.info(f"🤖 Rapor: {sol_rapor}")
     st.line_chart(sol_df['close'])
 
-# 💼 GERİ EKLENEN CÜZDAN PANELİ VE HABER DUYGUSU
+# 💼 CÜZDAN PANELİ VE HABER DUYGUSU
 st.markdown("---")
 col_wallet, col_news = st.columns(2)
 
