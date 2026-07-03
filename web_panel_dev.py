@@ -9,6 +9,7 @@ import ta
 # --- 1. ASIL UYGULAMANIN BİREBİR SAYFA VE SİYAH-ALTIN TASARIM AYARLARI ---
 st.set_page_config(page_title="ZEYA - Kripto Ticaret Paneli", layout="wide")
 
+# CRITICAL FIX: allow_html=True parametresi yeni Streamlit standartlarına göre güncellendi
 st.markdown("""
 <style>
     body { background-color: #0b0c10; color: #c5c6c8; }
@@ -51,7 +52,7 @@ st.markdown("""
         margin-bottom: 15px;
     }
 </style>
-""", unsafe_html=True)
+""", allow_html=True)
 
 # --- 2. YENİ LABORATUVAR KASA VE RISK HAFIZASI ---
 STOP_LOSS_ORAN = 0.02
@@ -89,7 +90,7 @@ def get_binance_data(symbol="BTCUSDT", interval="15m", limit=100):
         except:
             continue
             
-    # Yedek veri havuzu (Bağlantı kesilirse devreye girer)
+    # Canlı veri koparsa asıl uygulamanın görsel fiyatlarını taban alan koruma simülasyonu
     fiyatlar = {"BTCUSDT": 61849.0, "ETHUSDT": 1732.0, "SOLUSDT": 81.0}
     taban_fiyat = fiyatlar.get(symbol, 100.0)
     saat_serisi = [datetime.now() - timedelta(minutes=15*i) for i in range(limit)][::-1]
@@ -193,18 +194,17 @@ def simule_cuzdan_motoru(symbol, son_fiyat, karar, guven_orani):
             }])
             st.session_state.seyir_defteri = pd.concat([yeni_log, st.session_state.seyir_defteri], ignore_index=True)
 
-# --- 6. ARAYÜZ YERLEŞİMİ ---
+# --- 6. ARAYÜZ YERLEŞİMİ (BİREBİR ASIL UYGULAMA DÜZENİ) ---
 main_col, side_col = st.columns([3, 1])
 
 with side_col:
     st.markdown("### 👁️ Robot Sistem Durumu")
-    st.markdown('<div class="status-box">🧪 <b>Otomatik Emir Modu:</b><br><span style="color:#f2a900;">SİMÜLASYON (TEST)</span></div>', unsafe_html=True)
-    st.markdown('<div class="status-box" style="border-left-color:#2ecc71;">🧠 <b>Yapay Zeka Beyni:</b><br><span style="color:#2ecc71;">AKTİF</span></div>', unsafe_html=True)
+    st.markdown('<div class="status-box">🧪 <b>Otomatik Emir Modu:</b><br><span style="color:#f2a900;">SİMÜLASYON (TEST)</span></div>', allow_html=True)
+    st.markdown('<div class="status-box" style="border-left-color:#2ecc71;">🧠 <b>Yapay Zeka Beyni:</b><br><span style="color:#2ecc71;">AKTİF</span></div>', allow_html=True)
     
-    # CRITICAL FIX: Hataya sebep olan st.metric kaldırıldı, yerine asıl tasarıma uygun HTML status-box eklendi.
     st.markdown("### 💼 Simülasyon Kasası")
-    st.markdown(f'<div class="status-box" style="border-left-color:#f2a900;">💰 <b>Kasa Bakiyesi:</b><br><span style="color:#f2a900; font-size:20px; font-weight:bold;">{st.session_state.simule_bakiye:,.2f} USDT</span></div>', unsafe_html=True)
-    st.markdown(f'<div class="status-box" style="border-left-color:#3498db;">📈 <b>Açık Pozisyon:</b><br><span style="color:#3498db; font-size:20px; font-weight:bold;">{int(len(st.session_state.aktif_pozisyonlar))} Adet</span></div>', unsafe_html=True)
+    st.markdown(f'<div class="status-box" style="border-left-color:#f2a900;">💰 <b>Kasa Bakiyesi:</b><br><span style="color:#f2a900; font-size:20px; font-weight:bold;">{st.session_state.simule_bakiye:,.2f} USDT</span></div>', allow_html=True)
+    st.markdown(f'<div class="status-box" style="border-left-color:#3498db;">📈 <b>Açık Pozisyon:</b><br><span style="color:#3498db; font-size:20px; font-weight:bold;">{int(len(st.session_state.aktif_pozisyonlar))} Adet</span></div>', allow_html=True)
 
 with main_col:
     st.markdown("""
@@ -212,7 +212,7 @@ with main_col:
         <div class="zeya-title">Z E Y A</div>
         <div class="zeya-subtitle">⚡ ARTIFICIAL INTELLIGENCE TRADING BOT WITH MEMORY LOG ⚡</div>
     </div>
-    """, unsafe_html=True)
+    """, allow_html=True)
     
     pariteler = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     isimler = {"BTCUSDT": "Bitcoin (BTC)", "ETHUSDT": "Ethereum (ETH)", "SOLUSDT": "Solana (SOL)"}
@@ -230,7 +230,7 @@ with main_col:
             with p_cols[idx]:
                 st.markdown(f"### 🪙 {isimler[parite]}")
                 st.markdown(f"## **{son_fiyat:,.2f} USDT**")
-                st.markdown(f"<span style='color:#2ecc71;'>↑ ML Eğimi: {egim}</span>", unsafe_html=True)
+                st.markdown(f"<span style='color:#2ecc71;'>↑ ML Eğimi: {egim}</span>", allow_html=True)
                 
                 kart_rengi = "#2ecc71" if "AL" in karar else "#e74c3c" if "SAT" in karar else "#f1c40f"
                 st.markdown(f"""
@@ -239,7 +239,7 @@ with main_col:
                     <span style="font-size:24px; color:{kart_rengi}; font-weight:bold;">🟢 {karar}</span><br>
                     <span style="font-size:12px; color:#c5c6c8;">Güven: %{int(guven_orani)}</span>
                 </div>
-                """, unsafe_html=True)
+                """, allow_html=True)
                 
                 if parite in st.session_state.aktif_pozisyonlar:
                     st.info("🧪 Rapor: 🚀 [SİMÜLASYON] BUY tetiklendi.")
