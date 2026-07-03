@@ -6,24 +6,8 @@ from datetime import datetime, timedelta
 from sklearn.linear_model import LinearRegression
 import ta
 
-# --- 1. ASIL UYGULAMANIN BİREBİR SİYAH-ALTIN TASARIMI VE SAYFA AYARI ---
+# --- 1. SAYFA YAPILANDIRMASI ---
 st.set_page_config(page_title="ZEYA - Laboratuvar Geliştirme Paneli", layout="wide")
-
-hide_css = """
-<style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}
-body { background-color: #0b0c10; color: #c5c6c8; }
-.stApp { background-color: #0b0c10; }
-h1, h2, h3 { color: #f2a900 !important; font-family: 'Courier New', Courier, monospace; }
-.stButton>button { background-color: #f2a900; color: #0b0c10; font-weight: bold; border-radius: 5px; }
-.stButton>button:hover { background-color: #d49400; color: #0b0c10; }
-div[data-testid="stMetricValue"] { color: #f2a900 !important; font-family: 'Courier New', Courier, monospace; font-size: 28px; }
-div[data-testid="stMetricLabel"] { color: #c5c6c8 !important; }
-</style>
-"""
-st.markdown(hide_css, unsafe_html=True)
 
 # --- 2. YENİ GELİŞMİŞ ÖZELLİK AYARLARI ---
 GERCEK_ISLEM_AKTIF = False  
@@ -61,7 +45,7 @@ def get_binance_data(symbol="BTCUSDT", interval="15m", limit=200):
         st.error(f"Binance API Bağlantı Hatası: {e}")
         return pd.DataFrame()
 
-# --- 5. ASIL UYGULAMANIN TEKNİK ANALİZ VE YALNIZCA YAPAY ZEKA MODELİ ---
+# --- 5. ASIL UYGULAMANIN TEKNİK ANALİZ VE YAPAY ZEKA MODELİ ---
 def analiz_et_ve_karar_ver(df):
     if df.empty or len(df) < 30:
         return "NÖTR", 0.0, df
@@ -102,14 +86,13 @@ def analiz_et_ve_karar_ver(df):
 def simule_cuzdan_motoru(symbol, son_fiyat, karar, guven_orani):
     zaman_simdi = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # Açık pozisyon takip ve Stop/TP kontrolü
     if symbol in st.session_state.aktif_pozisyonlar:
         pozisyon = st.session_state.aktif_pozisyonlar[symbol]
         giris_fiyati = pozisyon['giris_fiyati']
         miktar = pozisyon['miktar']
         degisim = (son_fiyat - giris_fiyati) / giris_fiyati
         
-        # Gelişmiş Özellik: %2 Otomatik Stop-Loss
+        # %2 Otomatik Stop-Loss
         if degisim <= -STOP_LOSS_ORAN:
             iade_tutar = miktar * son_fiyat
             st.session_state.simule_bakiye += iade_tutar
@@ -123,7 +106,7 @@ def simule_cuzdan_motoru(symbol, son_fiyat, karar, guven_orani):
             }])
             st.session_state.seyir_defteri = pd.concat([yeni_log, st.session_state.seyir_defteri], ignore_index=True)
             
-        # Gelişmiş Özellik: %4 Otomatik Kâr Al (Take-Profit)
+        # %4 Otomatik Kâr Al (Take-Profit)
         elif degisim >= TAKE_PROFIT_ORAN:
             iade_tutar = miktar * son_fiyat
             st.session_state.simule_bakiye += iade_tutar
@@ -138,7 +121,6 @@ def simule_cuzdan_motoru(symbol, son_fiyat, karar, guven_orani):
             st.session_state.seyir_defteri = pd.concat([yeni_log, st.session_state.seyir_defteri], ignore_index=True)
 
     else:
-        # Sinyale göre akıllı alım mantığı (Kasanın %25'i ile)
         if karar == "AL" and st.session_state.simule_bakiye > 100:
             islem_tutari = st.session_state.simule_bakiye * 0.25
             st.session_state.simule_bakiye -= islem_tutari
@@ -174,10 +156,10 @@ def simule_cuzdan_motoru(symbol, son_fiyat, karar, guven_orani):
             st.session_state.seyir_defteri = pd.concat([yeni_log, st.session_state.seyir_defteri], ignore_index=True)
 
 # --- 7. BİREBİR ASIL UYGULAMA ARAYÜZÜ VE YENİ METRİKLER ---
-st.title("⚡ ZEYA QUANT ALGORİTMASI SİMÜLASYONU")
+st.title("🪙 ZEYA QUANT ALGORİTMASI SİMÜLASYONU")
 st.subheader("Yapay Zeka ve Matematiksel Risk Yönetim Motoru")
 
-# Gelişmiş Özellik Paneli Üst Kartlar
+# Şık ve modern metrik alanı
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric(label="💼 Toplam Simüle Nakit", value=f"{round(st.session_state.simule_bakiye, 2)} USDT")
