@@ -6,15 +6,31 @@ from datetime import datetime, timedelta
 from sklearn.linear_model import LinearRegression
 import ta
 
-# --- SAYFA YAPILANDIRMASI ---
+# --- 1. ASIL UYGULAMANIN BİREBİR SİYAH-ALTIN TASARIMI VE SAYFA AYARI ---
 st.set_page_config(page_title="ZEYA - Laboratuvar Geliştirme Paneli", layout="wide")
 
-# --- GLOBAL AYARLAR ---
+hide_css = """
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+body { background-color: #0b0c10; color: #c5c6c8; }
+.stApp { background-color: #0b0c10; }
+h1, h2, h3 { color: #f2a900 !important; font-family: 'Courier New', Courier, monospace; }
+.stButton>button { background-color: #f2a900; color: #0b0c10; font-weight: bold; border-radius: 5px; }
+.stButton>button:hover { background-color: #d49400; color: #0b0c10; }
+div[data-testid="stMetricValue"] { color: #f2a900 !important; font-family: 'Courier New', Courier, monospace; font-size: 28px; }
+div[data-testid="stMetricLabel"] { color: #c5c6c8 !important; }
+</style>
+"""
+st.markdown(hide_css, unsafe_html=True)
+
+# --- 2. YENİ GELİŞMİŞ ÖZELLİK AYARLARI ---
 GERCEK_ISLEM_AKTIF = False  
 STOP_LOSS_ORAN = 0.02      # %2 Zarar Durdurma
 TAKE_PROFIT_ORAN = 0.04    # %4 Kâr Alma
 
-# --- CÜZDAN VE SEYİR DEFTERİ HAFIZASI (SESSION STATE) ---
+# --- 3. YENİ GELİŞMİŞ ÖZELLİK: CÜZDAN VE SEYİR DEFTERİ HAFIZASI ---
 if "simule_bakiye" not in st.session_state:
     st.session_state.simule_bakiye = 10000.0  
 
@@ -26,7 +42,7 @@ if "seyir_defteri" not in st.session_state:
         "Zaman Damgası", "Parite", "İşlem Tipi", "Fiyat (USDT)", "Miktar", "Toplam Tutar", "Kasa Bakiyesi", "Açıklama"
     ])
 
-# --- VERİ ÇEKME FONKSİYONU (15 DAKİKALIK) ---
+# --- 4. ASIL UYGULAMANIN VERİ MOTORU ---
 @st.cache_data(ttl=60)
 def get_binance_data(symbol="BTCUSDT", interval="15m", limit=200):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
@@ -45,7 +61,7 @@ def get_binance_data(symbol="BTCUSDT", interval="15m", limit=200):
         st.error(f"Binance API Bağlantı Hatası: {e}")
         return pd.DataFrame()
 
-# --- YAPAY ZEKA MODELİ VE STRATEJİ MOTORU ---
+# --- 5. ASIL UYGULAMANIN TEKNİK ANALİZ VE YALNIZCA YAPAY ZEKA MODELİ ---
 def analiz_et_ve_karar_ver(df):
     if df.empty or len(df) < 30:
         return "NÖTR", 0.0, df
@@ -82,17 +98,18 @@ def analiz_et_ve_karar_ver(df):
 
     return karar, guven_orani, df
 
-# --- SIMÜLE CÜZDAN, STOP-LOSS VE TAKE-PROFIT MOTORU ---
+# --- 6. YENİ GELİŞMİŞ ÖZELLİK: RISK VE CÜZDAN YÖNETİM MOTORU ---
 def simule_cuzdan_motoru(symbol, son_fiyat, karar, guven_orani):
     zaman_simdi = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
+    # Açık pozisyon takip ve Stop/TP kontrolü
     if symbol in st.session_state.aktif_pozisyonlar:
         pozisyon = st.session_state.aktif_pozisyonlar[symbol]
         giris_fiyati = pozisyon['giris_fiyati']
         miktar = pozisyon['miktar']
-        
         degisim = (son_fiyat - giris_fiyati) / giris_fiyati
         
+        # Gelişmiş Özellik: %2 Otomatik Stop-Loss
         if degisim <= -STOP_LOSS_ORAN:
             iade_tutar = miktar * son_fiyat
             st.session_state.simule_bakiye += iade_tutar
@@ -102,11 +119,11 @@ def simule_cuzdan_motoru(symbol, son_fiyat, karar, guven_orani):
                 "Zaman Damgası": zaman_simdi, "Parite": symbol, "İşlem Tipi": "STOP-LOSS (SAT)",
                 "Fiyat (USDT)": son_fiyat, "Miktar": miktar, "Toplam Tutar": round(iade_tutar, 2),
                 "Kasa Bakiyesi": round(st.session_state.simule_bakiye, 2),
-                "Açıklama": f"Yapay zeka koruması: %{abs(round(degisim*100,2))} zararla stop olundu."
+                "Açıklama": f"ZEYA Risk Koruması: %{abs(round(degisim*100,2))} zararla pozisyon stoplandı."
             }])
             st.session_state.seyir_defteri = pd.concat([yeni_log, st.session_state.seyir_defteri], ignore_index=True)
-            st.warning(f"🚨 {symbol} için Stop-Loss tetiklendi! Pozisyon zararla kapatıldı.")
             
+        # Gelişmiş Özellik: %4 Otomatik Kâr Al (Take-Profit)
         elif degisim >= TAKE_PROFIT_ORAN:
             iade_tutar = miktar * son_fiyat
             st.session_state.simule_bakiye += iade_tutar
@@ -116,12 +133,12 @@ def simule_cuzdan_motoru(symbol, son_fiyat, karar, guven_orani):
                 "Zaman Damgası": zaman_simdi, "Parite": symbol, "İşlem Tipi": "TAKE-PROFIT (SAT)",
                 "Fiyat (USDT)": son_fiyat, "Miktar": miktar, "Toplam Tutar": round(iade_tutar, 2),
                 "Kasa Bakiyesi": round(st.session_state.simule_bakiye, 2),
-                "Açıklama": f"Hedef Değere Ulaşıldı: %{round(degisim*100,2)} kâr realize edildi!"
+                "Açıklama": f"Hedef Değer: %{round(degisim*100,2)} kâr realize edildi!"
             }])
             st.session_state.seyir_defteri = pd.concat([yeni_log, st.session_state.seyir_defteri], ignore_index=True)
-            st.success(f"💰 {symbol} için Kâr Al (Take-Profit) tetiklendi! Kâr kasaya eklendi.")
 
     else:
+        # Sinyale göre akıllı alım mantığı (Kasanın %25'i ile)
         if karar == "AL" and st.session_state.simule_bakiye > 100:
             islem_tutari = st.session_state.simule_bakiye * 0.25
             st.session_state.simule_bakiye -= islem_tutari
@@ -137,10 +154,9 @@ def simule_cuzdan_motoru(symbol, son_fiyat, karar, guven_orani):
                 "Zaman Damgası": zaman_simdi, "Parite": symbol, "İşlem Tipi": "ALIM (BUY)",
                 "Fiyat (USDT)": son_fiyat, "Miktar": round(miktar, 4), "Toplam Tutar": round(islem_tutari, 2),
                 "Kasa Bakiyesi": round(st.session_state.simule_bakiye, 2),
-                "Açıklama": f"Yapay Zeka Sinyali (Güven: %{round(guven_orani,1)}). Pozisyon açıldı."
+                "Açıklama": f"Yapay Zeka AL Sinyali (Güven: %{round(guven_orani,1)}). Pozisyon açıldı."
             }])
             st.session_state.seyir_defteri = pd.concat([yeni_log, st.session_state.seyir_defteri], ignore_index=True)
-            st.info(f"📥 {symbol} için ALIM işlemi simüle edildi.")
             
         elif karar == "SAT" and symbol in st.session_state.aktif_pozisyonlar:
             pozisyon = st.session_state.aktif_pozisyonlar[symbol]
@@ -157,55 +173,61 @@ def simule_cuzdan_motoru(symbol, son_fiyat, karar, guven_orani):
             }])
             st.session_state.seyir_defteri = pd.concat([yeni_log, st.session_state.seyir_defteri], ignore_index=True)
 
-# --- ARAYÜZ TASARIMI ---
-st.title("⚡ ZEYA QUANT LABORATUVARI SÜRÜMÜ (DEV V2)")
-st.subheader("15 Dakikalık Otomatik Simülasyon, Kasa ve Risk Yönetim Paneli")
+# --- 7. BİREBİR ASIL UYGULAMA ARAYÜZÜ VE YENİ METRİKLER ---
+st.title("⚡ ZEYA QUANT ALGORİTMASI SİMÜLASYONU")
+st.subheader("Yapay Zeka ve Matematiksel Risk Yönetim Motoru")
 
-# Üst Bilgi Kartları
+# Gelişmiş Özellik Paneli Üst Kartlar
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric(label="💼 Toplam Simüle Nakit", value=f"{round(st.session_state.simule_bakiye, 2)} USDT")
 with col2:
     st.metric(label="📊 Açık Pozisyon Sayısı", value=f"{len(st.session_state.aktif_pozisyonlar)} Adet")
 with col3:
-    st.metric(label="🛡️ Otomatik Stop-Loss", value=f"% {int(STOP_LOSS_ORAN * 100)}")
+    st.metric(label="🛡️ Koruma (Stop-Loss)", value=f"% {int(STOP_LOSS_ORAN * 100)}")
 with col4:
-    st.metric(label="🎯 Otomatik Kâr Al (TP)", value=f"% {int(TAKE_PROFIT_ORAN * 100)}")
+    st.metric(label="🎯 Hedef (Take-Profit)", value=f"% {int(TAKE_PROFIT_ORAN * 100)}")
+
+st.markdown("---")
 
 pariteler = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-st.markdown("### 🖥️ Canlı İzleme ve Yapay Zeka Kararları")
-
+# Asıl uygulamadaki grafiklerin ve analizlerin birebir döngüsü
 for parite in pariteler:
     df = get_binance_data(symbol=parite, interval="15m", limit=100)
     if not df.empty:
         karar, guven_orani, df_analiz = analiz_et_ve_karar_ver(df)
         son_fiyat = df_analiz['close'].iloc[-1]
         
+        # Arka planda gelişmiş cüzdan motorunu çalıştır
         simule_cuzdan_motoru(parite, son_fiyat, karar, guven_orani)
         
-        p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+        # Birebir asıl uygulama başlık ve sinyal yapısı
+        p_col1, p_col2, p_col3 = st.columns([2, 1, 1])
         with p_col1:
-            st.markdown(f"**{parite}**")
+            st.markdown(f"### 📈 {parite} 15 Dakikalık Canlı Grafik")
         with p_col2:
-            st.markdown(f"Fiyat: `{son_fiyat} USDT`")
+            st.metric(label="Anlık Fiyat", value=f"{son_fiyat} USDT")
         with p_col3:
             renk = "🟢" if karar == "AL" else "🔴" if karar == "SAT" else "⚪"
-            st.markdown(f"Sinyal: {renk} **{karar}**")
-        with p_col4:
-            st.markdown(f"Yapay Zeka Güven: `%{round(guven_orani, 1)}`")
+            st.metric(label="ZEYA Kararı", value=f"{renk} {karar}", delta=f"Güven: %{int(guven_orani)}")
+        
+        # Birebir asıl uygulama çizgi grafiği
+        chart_data = df_analiz.set_index('timestamp')['close']
+        st.line_chart(chart_data, use_container_width=True)
         st.markdown("---")
 
-st.markdown("### 📈 Mevcut Açık Pozisyonlar")
+# --- YENİ GELİŞMİŞ ÖZELLİKLERİN TABLOLARI ---
+st.markdown("### 💼 Mevcut Açık Pozisyonlar")
 if st.session_state.aktif_pozisyonlar:
     poz_df = pd.DataFrame.from_dict(st.session_state.aktif_pozisyonlar, orient='index').reset_index()
     poz_df.columns = ["Parite", "Giriş Fiyatı", "Miktar", "Giriş Zamanı"]
     st.dataframe(poz_df, use_container_width=True)
 else:
-    st.info("Şu an açıkta simüle pozisyon bulunmuyor. ZEYA 'AL' sinyali bekliyor.")
+    st.info("Şu an açıkta pozisyon bulunmuyor. ZEYA strateji doğrultusunda 'AL' sinyali bekliyor.")
 
-st.markdown("### 📜 ZEYA Algoritma Seyir Defteri (Hafıza Motoru)")
+st.markdown("### 📜 ZEYA Gelişmiş Algoritma Seyir Defteri")
 if not st.session_state.seyir_defteri.empty:
     st.dataframe(st.session_state.seyir_defteri, use_container_width=True)
 else:
-    st.text("Henüz bir işlem kaydı gerçekleşmedi. Bot piyasayı izliyor...")
+    st.text("Henüz bir işlem veya risk tetiklenmesi gerçekleşmedi. İzleniyor...")
