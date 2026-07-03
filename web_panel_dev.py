@@ -89,8 +89,8 @@ def get_binance_data(symbol="BTCUSDT", interval="15m", limit=100):
         except:
             continue
             
-    # Tam yedekleme modu: Eğer bağlantı anlık koparsa Streamlit'in çökmesini engeller
-    fiyatlar = {"BTCUSDT": 96500.0, "ETHUSDT": 3450.0, "SOLUSDT": 210.0}
+    # Yedek veri havuzu (Bağlantı kesilirse devreye girer)
+    fiyatlar = {"BTCUSDT": 61849.0, "ETHUSDT": 1732.0, "SOLUSDT": 81.0}
     taban_fiyat = fiyatlar.get(symbol, 100.0)
     saat_serisi = [datetime.now() - timedelta(minutes=15*i) for i in range(limit)][::-1]
     df_fake = pd.DataFrame({
@@ -201,10 +201,10 @@ with side_col:
     st.markdown('<div class="status-box">🧪 <b>Otomatik Emir Modu:</b><br><span style="color:#f2a900;">SİMÜLASYON (TEST)</span></div>', unsafe_html=True)
     st.markdown('<div class="status-box" style="border-left-color:#2ecc71;">🧠 <b>Yapay Zeka Beyni:</b><br><span style="color:#2ecc71;">AKTİF</span></div>', unsafe_html=True)
     
+    # CRITICAL FIX: Hataya sebep olan st.metric kaldırıldı, yerine asıl tasarıma uygun HTML status-box eklendi.
     st.markdown("### 💼 Simülasyon Kasası")
-    # Tip hatasını engellemek için string formatlama doğrudan metric içine eklendi
-    st.metric(label="Kasa Bakiyesi", value=f"{st.session_state.simule_bakiye:,.2f} USDT")
-    st.metric(label="Açık Pozisyon", value=f"{int(len(st.session_state.aktif_pozisyonlar))} Adet")
+    st.markdown(f'<div class="status-box" style="border-left-color:#f2a900;">💰 <b>Kasa Bakiyesi:</b><br><span style="color:#f2a900; font-size:20px; font-weight:bold;">{st.session_state.simule_bakiye:,.2f} USDT</span></div>', unsafe_html=True)
+    st.markdown(f'<div class="status-box" style="border-left-color:#3498db;">📈 <b>Açık Pozisyon:</b><br><span style="color:#3498db; font-size:20px; font-weight:bold;">{int(len(st.session_state.aktif_pozisyonlar))} Adet</span></div>', unsafe_html=True)
 
 with main_col:
     st.markdown("""
