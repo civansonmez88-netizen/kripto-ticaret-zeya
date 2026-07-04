@@ -288,7 +288,7 @@ st.markdown("""
     <div style='text-align: center; background-color: #111111; padding: 20px; border-radius: 15px; border: 1px solid #D4AF37; margin-bottom: 25px;'>
         <h1 style='color: #D4AF37; font-family: "Arial Black", Gadget, sans-serif; letter-spacing: 5px; font-size: 45px; margin: 0;'>Z E Y A</h1>
         <p style='color: #888888; font-family: "Courier New", monospace; font-size: 14px; margin-top: 5px; margin-bottom: 0;'>
-            ⚡ 24/7 AUTONOMOUS BACKGROUND ENGINE & LIFETIME DATABASE ACTIVE ⚡
+                    AUTONOMOUS BACKGROUND ENGINE & LIFETIME DATABASE ACTIVE 
         </p>
     </div>
 """, unsafe_allow_html=True)
