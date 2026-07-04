@@ -342,7 +342,3 @@ if not df_log.empty:
     st.dataframe(df_log, use_container_width=True)
 else:
     st.info("Arka plan motoru ilk verileri topluyor, tablo birazdan güncellenecektir...")
-
-st.markdown("---")
-if st.button("🔄 Ekranı Manuel Yenile"):
-    st.rerun()
