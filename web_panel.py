@@ -10,6 +10,8 @@ import hmac
 import hashlib
 import time
 from datetime import datetime
+import sqlite3
+import os
 
 # ==========================================================
 # 🔑 BINANCE API AYARLARI (BURAYA KENDİ BİLGİLERİNİ GİREBİLİRSİN)
@@ -31,9 +33,96 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 🧠 SİNYAL GEÇMİŞİ HAFIZA MOTORU BAŞLATMA
-if 'sinyal_deposu' not in st.session_state:
-    st.session_state['sinyal_deposu'] = []
+# ==========================================================
+# 🧠 ÇELİK ZIRHLI SQLITE KALICI HAFIZA MOTORU
+# ==========================================================
+DB_FILE = "zeya_asıl_hafiza.db"
+
+def veritabani_kur():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    # Kasa tablosu
+    cursor.execute("CREATE TABLE IF NOT EXISTS kasa (id INTEGER PRIMARY KEY, bakiye REAL)")
+    # Açık simüle pozisyonlar tablosu (Üst üste alım yapıp kasayı bitirmemesi için)
+    cursor.execute("CREATE TABLE IF NOT EXISTS pozisyonlar (parite TEXT PRIMARY KEY, giris_fiyati REAL, miktar REAL)")
+    # Seyir defteri tablosu
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sinyal_deposu (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tarih_saat TEXT,
+            btc_fiyat TEXT,
+            btc_sinyal TEXT,
+            eth_fiyat TEXT,
+            eth_sinyal TEXT,
+            sol_fiyat TEXT,
+            sol_sinyal TEXT
+        )
+    """)
+    # İlk açılışta 10,000 USDT kasayı tanımla
+    cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
+    if cursor.fetchone() is None:
+        cursor.execute("INSERT INTO kasa (id, bakiye) VALUES (1, 10000.0)")
+    conn.commit()
+    conn.close()
+
+# Veritabanını aktif et
+veritabani_kur()
+
+def oku_kasa_bakiyesi():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
+    bakiye = cursor.fetchone()[0]
+    conn.close()
+    return bakiye
+
+def guncelle_kasa_bakiyesi(yeni_bakiye):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE kasa SET bakiye = ? WHERE id = 1", (yeni_bakiye,))
+    conn.commit()
+    conn.close()
+
+def oku_pozisyon(parite):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT giris_fiyati, miktar FROM pozisyonlar WHERE parite = ?", (parite,))
+    res = cursor.fetchone()
+    conn.close()
+    return res
+
+def pozisyon_kaydet(parite, giris_fiyati, miktar):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO pozisyonlar (parite, giris_fiyati, miktar) VALUES (?, ?, ?)", (parite, giris_fiyati, miktar))
+    conn.commit()
+    conn.close()
+
+def pozisyon_sil(parite):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM pozisyonlar WHERE parite = ?", (parite,))
+    conn.commit()
+    conn.close()
+
+def oku_sinyal_deposu():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT tarih_saat AS 'Tarih/Saat', btc_fiyat AS 'BTC Fiyat', btc_sinyal AS 'BTC Sinyal', eth_fiyat AS 'ETH Fiyat', eth_sinyal AS 'ETH Sinyal', sol_fiyat AS 'SOL Fiyat', sol_sinyal AS 'SOL Sinyal' FROM sinyal_deposu ORDER BY id DESC LIMIT 15", conn)
+    conn.close()
+    return df
+
+def yeni_sinyal_ekle(log_dict):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO sinyal_deposu (tarih_saat, btc_fiyat, btc_sinyal, eth_fiyat, eth_sinyal, sol_fiyat, sol_sinyal)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (log_dict["Tarih/Saat"], log_dict["BTC Fiyat"], log_dict["BTC Sinyal"], log_dict["ETH Fiyat"], log_dict["ETH Sinyal"], log_dict["SOL Fiyat"], log_dict["SOL Sinyal"]))
+    conn.commit()
+    conn.close()
+
+# SİNYAL GEÇMİŞİ HAFIZA MOTORU BAŞLATMA (Yedeklilik için session_state'i veritabanına bağladık)
+st.session_state['sinyal_deposu'] = oku_sinyal_deposu().to_dict(orient='records')
 
 # SİYAH ÜZERİNE ALTIN RENKLİ "ZEYA" LOGO TASARIMI
 st.markdown("""
@@ -42,7 +131,7 @@ st.markdown("""
             Z E Y A
         </h1>
         <p style='color: #888888; font-family: "Courier New", monospace; font-size: 14px; margin-top: 5px; margin-bottom: 0;'>
-            ⚡ ARTIFICIAL INTELLIGENCE TRADING BOT WITH MEMORY LOG ⚡
+            ⚡ ARTIFICIAL INTELLIGENCE TRADING BOT WITH LIFETIME DATABASE MEMORY ⚡
         </p>
     </div>
 """, unsafe_allow_html=True)
@@ -140,18 +229,47 @@ def gercek_veri_ve_islem_hazirla(symbol):
         
         islem_raporu = "⏸️ Beklemede"
         if aksiyon in ["BUY", "SELL"]:
-            islem_raporu = binance_emir_gonder(symbol, aksiyon)
+            if not GERCEK_ISLEM_AKTIF:
+                # --- SİMÜLASYON İÇİN AKILLI VE KALICI CÜZDAN YÖNETİMİ ---
+                mevcut_bakiye = oku_kasa_bakiyesi()
+                aktif_pozisyon = oku_pozisyon(symbol)
+                
+                if "BUY" in aksiyon and not aktif_pozisyon:
+                    islem_tutari = mevcut_bakiye * 0.25  # Kasanın %25'i ile alım mantığı
+                    if islem_tutari > 10:
+                        yeni_bakiye = mevcut_bakiye - islem_tutari
+                        miktar = islem_tutari / anlik_fiyat
+                        pozisyon_kaydet(symbol, anlik_fiyat, miktar)
+                        guncelle_kasa_bakiyesi(yeni_bakiye)
+                        islem_raporu = f"🧪 [SİMÜLASYON] ALIM Yapıldı. Alınan Miktar: {miktar:.4f}"
+                    else:
+                        islem_raporu = "🧪 [SİMÜLASYON] Kasa Bakiyesi Yetersiz."
+                elif "SELL" in aksiyon and aktif_pozisyon:
+                    giris_fiyati, miktar = aktif_pozisyon
+                    iade_tutar = miktar * anlik_fiyat
+                    yeni_bakiye = mevcut_bakiye + iade_tutar
+                    pozisyon_sil(symbol)
+                    guncelle_kasa_bakiyesi(yeni_bakiye)
+                    kar_zarar = ((anlik_fiyat - giris_fiyati) / giris_fiyati) * 100
+                    islem_raporu = f"🧪 [SİMÜLASYON] SATIM Yapıldı. Kâr/Zarar: %{kar_zarar:.2f}"
+                else:
+                    if "BUY" in aksiyon:
+                        islem_raporu = "⏳ [SİMÜLASYON] Pozisyon zaten açık, yeni alım yapılmadı."
+                    else:
+                        islem_raporu = "⏳ [SİMÜLASYON] Satılacak açık pozisyon yok."
+            else:
+                islem_raporu = binance_emir_gonder(symbol, aksiyon)
         
         return anlik_fiyat, df['rsi'].iloc[-1], df['bb_alt'].iloc[-1], egim, df, karar, guven, renk, islem_raporu
     except Exception as e:
         return 0.0, 50.0, 0.0, 0.0, pd.DataFrame([0]*60, columns=['close']), "🟡 NÖTR", 50.0, "#f1c40f", "❌ Sistem Hatası"
 
-# VERİLERİ VE EMİRLERİ TETİKLEYELİM
+# VERİLERİ VE EMİRLERİ TETİKLEYELİM
 btc_fiyat, btc_rsi, btc_bb, btc_egim, btc_df, btc_karar, btc_guven, btc_renk, btc_rapor = gercek_veri_ve_islem_hazirla("BTCUSDT")
 eth_fiyat, eth_rsi, eth_bb, eth_egim, eth_df, eth_karar, eth_guven, eth_renk, eth_rapor = gercek_veri_ve_islem_hazirla("ETHUSDT")
 sol_fiyat, sol_rsi, sol_bb, sol_egim, sol_df, sol_karar, sol_guven, sol_renk, sol_rapor = gercek_veri_ve_islem_hazirla("SOLUSDT")
 
-# HAFIZAYA YENİ LOG KAYDI EKLEME
+# HAFIZAYA YENİ LOG KAYDI EKLEME (VERİTABANI KONTROLLÜ)
 su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 yeni_log = {
     "Tarih/Saat": su_an,
@@ -163,9 +281,10 @@ yeni_log = {
     "SOL Sinyal": sol_karar
 }
 
-if len(st.session_state['sinyal_deposu']) == 0 or st.session_state['sinyal_deposu'][0]["BTC Fiyat"] != yeni_log["BTC Fiyat"]:
-    st.session_state['sinyal_deposu'].insert(0, yeni_log)
-    st.session_state['sinyal_deposu'] = st.session_state['sinyal_deposu'][:15]
+# Veritabanındaki en son kaydı kontrol et, fiyat değiştiyse kalıcı olarak kaydet
+gecmis_df = oku_sinyal_deposu()
+if gecmis_df.empty or gecmis_df.iloc[0]["BTC Fiyat"] != yeni_log["BTC Fiyat"]:
+    yeni_sinyal_ekle(yeni_log)
 
 # EKRAN ARAYÜZÜ (3 SÜTUN)
 col1, col2, col3 = st.columns(3)
@@ -194,18 +313,20 @@ col_wallet, col_news = st.columns(2)
 
 with col_wallet:
     st.header("💼 Simüle Fon Yönetimi")
-    st.info(f"💰 Toplam Kasa Bakiyesi: **10,000.00 USDT**")
+    # Statik değeri, veritabanından gelen dinamik canlı kasa değerine bağladık!
+    canli_kasa_bakiyesi = oku_kasa_bakiyesi()
+    st.info(f"💰 Toplam Kasa Bakiyesi: **{canli_kasa_bakiyesi:,.2f} USDT**")
     st.success(f"📈 Backtest Başarı Kanıtı: **%100 BAŞARI** (Son 500 Saat Verisi)")
 
 with col_news:
     st.header("📰 Yapay Zeka Haber Duygusu")
     st.warning(f"🟢 Piyasa Havası: OLUMLU / NÖTR (Feshetme veya panik dalgası saptanmadı.)")
 
-# 📜 GEÇMİŞ SİNYAL LOG TABLOSU
+# 📜 GEÇMİŞ SİNYAL LOG TABLOSU (Kalıcı Veritabanından Okur)
 st.markdown("---")
 st.header("📜 ZEYA Algoritma Seyir Defteri (Geçmiş Sinyaller)")
-if st.session_state['sinyal_deposu']:
-    df_log = pd.DataFrame(st.session_state['sinyal_deposu'])
+df_log = oku_sinyal_deposu()
+if not df_log.empty:
     st.dataframe(df_log, use_container_width=True)
 else:
     st.info("Henüz geçmiş sinyal kaydı oluşmadı. Sayfayı yeniledikçe burası dolacaktır.")
