@@ -298,7 +298,7 @@ if GERCEK_ISLEM_AKTIF:
     st.sidebar.error("🤖 Otomatik Emir Modu: GERÇEK PİYASA")
 else:
     st.sidebar.warning("🧪 Otomatik Emir Modu: SİMÜLASYON (TEST)")
-st.sidebar.success("7/24 Kesintisiz Arkaplan Motoru: AKTİF 🟢")
+st.sidebar.success(" Kesintisiz Arkaplan Motoru: AKTİF 🟢")
 
 # 3 SÜTUN GÖRSEL PANEL
 col1, col2, col3 = st.columns(3)
