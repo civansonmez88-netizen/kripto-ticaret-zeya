@@ -12,12 +12,25 @@ import time
 from datetime import datetime
 import sqlite3
 import threading
+import os
 
 # ==========================================================
-# 🔑 BINANCE API AYARLARI (BURAYA KENDİ BİLGİLERİNİ GİREBİLİRSİN)
+# 🔑 BINANCE API AYARLARI (GÜVENLİ YÖNTEM: st.secrets / ortam değişkeni)
 # ==========================================================
-BINANCE_API_KEY = "BURAYA_BINANCE_API_KEY_YAZILACAK"
-BINANCE_SECRET_KEY = "BURAYA_BINANCE_SECRET_KEY_YAZILACAK"
+# ÖNEMLİ: Anahtarları asla doğrudan kodun içine yazma!
+# Bunun yerine .streamlit/secrets.toml dosyasına şunları ekle:
+#   BINANCE_API_KEY = "gerçek_anahtarın"
+#   BINANCE_SECRET_KEY = "gerçek_gizli_anahtarın"
+# Bu dosyayı ASLA GitHub'a veya başka bir yere yükleme (.gitignore'a ekle).
+def _anahtar_oku(isim):
+    # Önce Streamlit secrets'a bakar, yoksa ortam değişkenine (env variable) bakar
+    try:
+        return st.secrets[isim]
+    except Exception:
+        return os.environ.get(isim, "")
+
+BINANCE_API_KEY = _anahtar_oku("BINANCE_API_KEY")
+BINANCE_SECRET_KEY = _anahtar_oku("BINANCE_SECRET_KEY")
 GERCEK_ISLEM_AKTIF = False  # Gerçek al-sat için burayı True yapmalısın!
 
 # SAYFA GENİŞLİK VE MARKA AYARLARI
@@ -39,7 +52,6 @@ st.markdown("""
 DB_FILE = "zeya_asıl_hafiza.db"
 
 def veritabani_kur():
-    # check_same_thread=False ekledik çünkü arka plan motoru ile ön yüz buraya eşzamanlı erişecek
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS kasa (id INTEGER PRIMARY KEY, bakiye REAL)")
@@ -128,8 +140,8 @@ def binance_emir_gonder(symbol, side, type="MARKET"):
     endpoint = "/api/v3/order"
     timestamp = int(time.time() * 1000)
     query_string = f"symbol={symbol}&side={side}&type={type}&quantity=0.001&timestamp={timestamp}"
-    if BINANCE_API_KEY == "BURAYA_BINANCE_API_KEY_YAZILACAK":
-        return "❌ API Anahtarı Eksik!"
+    if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
+        return "❌ API Anahtarı Eksik! (.streamlit/secrets.toml dosyasını kontrol et)"
     signature = hmac.new(BINANCE_SECRET_KEY.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
     url = f"{base_url}{endpoint}?{query_string}&signature={signature}"
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
@@ -166,10 +178,6 @@ def yapay_zeka_karar_merkezi(rsi, macd, macd_sinyal, ema, close, egim, bb_alt):
     else: return "🟡 BEKLE / NÖTR", 50.0, "#f1c40f", "HOLD"
 
 def analiz_ve_islem_yapi(symbol, emir_tetikle=False):
-    """
-    emir_tetikle=True: 7/24 Arka plan motoru çalıştırır (Al-sat yapar, DB yazar).
-    emir_tetikle=False: Ön yüz paneli çalıştırır (Sadece anlık gösterim yapar, cüzdana dokunmaz).
-    """
     try:
         import yfinance as yf
         yf_symbol = symbol.replace("USDT", "-USD")
@@ -227,18 +235,103 @@ def analiz_ve_islem_yapi(symbol, emir_tetikle=False):
         return 0.0, 50.0, pd.DataFrame([0]*60, columns=['close']), "🟡 NÖTR", 50.0, "#f1c40f", f"❌ Hata", 0.0
 
 # ==========================================================
+# 📊 GERÇEK BACKTEST MOTORU (Sahte "%100 başarı" yazısının yerine)
+# ==========================================================
+@st.cache_data(ttl=3600)  # Sonucu 1 saat boyunca önbellekte tutar, her yenilemede yeniden hesaplamaz
+def gercek_backtest_yap(symbol, gun_sayisi=30):
+    """
+    Geçmiş veride, botun kullandığı AYNI karar mantığını adım adım uygular.
+    Gerçek bir kâr/zarar, kazanma oranı ve maksimum düşüş (drawdown) hesaplar.
+    Bu fonksiyon hiçbir şeyi hardcode etmez; tüm sonuçlar veriden hesaplanır.
+    """
+    try:
+        import yfinance as yf
+        yf_symbol = symbol.replace("USDT", "-USD")
+        veri = yf.Ticker(yf_symbol).history(period=f"{gun_sayisi}d", interval="1h")
+        if len(veri) < 60:
+            return None
+
+        df = pd.DataFrame(veri['Close'].tolist(), columns=['close'])
+        df['rsi'] = RSIIndicator(close=df['close'], window=14).rsi()
+        macd_api = MACD(close=df['close'])
+        df['macd'] = macd_api.macd()
+        df['macd_sinyal'] = macd_api.macd_signal()
+        df['ema_20'] = EMAIndicator(close=df['close'], window=20).ema_indicator()
+        df['bb_alt'] = BollingerBands(close=df['close'], window=20, window_dev=2).bollinger_lband()
+        df = df.dropna().reset_index(drop=True)
+
+        sanal_bakiye = 10000.0
+        pozisyon_miktar = 0.0
+        pozisyon_giris = 0.0
+        islem_sayisi = 0
+        kazanan_islem = 0
+        toplam_deger_gecmisi = []
+
+        for i in range(20, len(df)):
+            pencere = df.iloc[max(0, i - 20):i + 1]
+            X = np.array(range(len(pencere))).reshape(-1, 1)
+            egim = LinearRegression().fit(X, pencere['close']).coef_[0]
+            satir = df.iloc[i]
+
+            karar, guven, renk, aksiyon = yapay_zeka_karar_merkezi(
+                satir['rsi'], satir['macd'], satir['macd_sinyal'],
+                satir['ema_20'], satir['close'], egim, satir['bb_alt']
+            )
+
+            if aksiyon == "BUY" and pozisyon_miktar == 0:
+                islem_tutari = sanal_bakiye * 0.25
+                if islem_tutari > 10:
+                    pozisyon_miktar = islem_tutari / satir['close']
+                    pozisyon_giris = satir['close']
+                    sanal_bakiye -= islem_tutari
+                    islem_sayisi += 1
+            elif aksiyon == "SELL" and pozisyon_miktar > 0:
+                satis_tutari = pozisyon_miktar * satir['close']
+                sanal_bakiye += satis_tutari
+                if satir['close'] > pozisyon_giris:
+                    kazanan_islem += 1
+                pozisyon_miktar = 0.0
+                pozisyon_giris = 0.0
+
+            guncel_toplam_deger = sanal_bakiye + (pozisyon_miktar * satir['close'])
+            toplam_deger_gecmisi.append(guncel_toplam_deger)
+
+        # Açık pozisyon varsa son fiyattan kapat
+        if pozisyon_miktar > 0:
+            sanal_bakiye += pozisyon_miktar * df.iloc[-1]['close']
+
+        if not toplam_deger_gecmisi:
+            return None
+
+        # Maksimum düşüş (drawdown) hesabı
+        deger_serisi = pd.Series(toplam_deger_gecmisi)
+        zirve = deger_serisi.cummax()
+        dususler = (deger_serisi - zirve) / zirve
+        maks_dusus = dususler.min() * 100
+
+        toplam_getiri = ((sanal_bakiye - 10000.0) / 10000.0) * 100
+        kazanma_orani = (kazanan_islem / islem_sayisi * 100) if islem_sayisi > 0 else 0.0
+
+        return {
+            "toplam_getiri_yuzde": toplam_getiri,
+            "islem_sayisi": islem_sayisi,
+            "kazanma_orani": kazanma_orani,
+            "maks_dusus_yuzde": maks_dusus,
+            "gun_sayisi": gun_sayisi,
+        }
+    except Exception as e:
+        return None
+
+# ==========================================================
 # 🚀 7/24 BAĞIMSIZ ARKA PLAN MOTORU (AUTOMATED WORKER)
 # ==========================================================
 def kesintisiz_bot_dongusu():
-    """Ön yüzden tamamen bağımsız, sunucuda sonsuza kadar dönecek olan ana motor"""
     while True:
         try:
-            # 1. Tüm pariteleri analiz et ve gerekiyorsa emir tetikle
             btc_f, _, _, btc_k, _, _, _, _ = analiz_ve_islem_yapi("BTCUSDT", emir_tetikle=True)
             eth_f, _, _, eth_k, _, _, _, _ = analiz_ve_islem_yapi("ETHUSDT", emir_tetikle=True)
             sol_f, _, _, sol_k, _, _, _, _ = analiz_ve_islem_yapi("SOLUSDT", emir_tetikle=True)
             
-            # 2. Seyir Defterine Günlüğü kaydet
             su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             yeni_log = {
                 "Tarih/Saat": su_an,
@@ -250,7 +343,6 @@ def kesintisiz_bot_dongusu():
                 "SOL Sinyal": sol_k
             }
             
-            # Veritabanındaki en son kaydı kontrol et, fiyat değiştiyse kaydet
             conn = sqlite3.connect(DB_FILE, check_same_thread=False)
             gecmis = pd.read_sql_query("SELECT btc_fiyat FROM sinyal_deposu ORDER BY id DESC LIMIT 1", conn)
             conn.close()
@@ -261,34 +353,29 @@ def kesintisiz_bot_dongusu():
         except Exception as e:
             print(f"Arkaplan Bot Hatası: {e}")
             
-        # 15 Dakika Uyku Modu (15 dakika = 900 saniye)
         time.sleep(900)
 
-# Streamlit her yenilendiğinde bu thread'i tekrar tekrar açmasın diye cache'liyoruz.
 @st.cache_resource
 def arkaplan_motorunu_atesle():
     t = threading.Thread(target=kesintisiz_bot_dongusu, daemon=True)
     t.start()
     return True
 
-# 7/24 Çalışacak Motoru Başlat
 arkaplan_motorunu_atesle()
 
 # ==========================================================
 # 💻 ÖN YÜZ GÖSTERİM PANELİ (STREAMLIT UI)
 # ==========================================================
 
-# Ön yüz sadece grafik çizmek ve anlık durumu göstermek için verileri çeker (emir_tetikle=False)
 btc_fiyat, btc_rsi, btc_df, btc_karar, btc_guven, btc_renk, btc_rapor, btc_egim = analiz_ve_islem_yapi("BTCUSDT", emir_tetikle=False)
 eth_fiyat, eth_rsi, eth_df, eth_karar, eth_guven, eth_renk, eth_rapor, eth_egim = analiz_ve_islem_yapi("ETHUSDT", emir_tetikle=False)
 sol_fiyat, sol_rsi, sol_df, sol_karar, sol_guven, sol_renk, sol_rapor, sol_egim = analiz_ve_islem_yapi("SOLUSDT", emir_tetikle=False)
 
-# LOGO VE SIDEBAR TASARIMI
 st.markdown("""
     <div style='text-align: center; background-color: #111111; padding: 20px; border-radius: 15px; border: 1px solid #D4AF37; margin-bottom: 25px;'>
         <h1 style='color: #D4AF37; font-family: "Arial Black", Gadget, sans-serif; letter-spacing: 5px; font-size: 45px; margin: 0;'>Z E Y A</h1>
         <p style='color: #888888; font-family: "Courier New", monospace; font-size: 14px; margin-top: 5px; margin-bottom: 0;'>
-                    AUTONOMOUS BACKGROUND ENGINE & LIFETIME DATABASE ACTIVE 
+            ⚡ 24/7 AUTONOMOUS BACKGROUND ENGINE & LIFETIME DATABASE ACTIVE ⚡
         </p>
     </div>
 """, unsafe_allow_html=True)
@@ -298,9 +385,8 @@ if GERCEK_ISLEM_AKTIF:
     st.sidebar.error("🤖 Otomatik Emir Modu: GERÇEK PİYASA")
 else:
     st.sidebar.warning("🧪 Otomatik Emir Modu: SİMÜLASYON (TEST)")
-st.sidebar.success(" Kesintisiz Arkaplan Motoru: AKTİF 🟢")
+st.sidebar.success("7/24 Kesintisiz Arkaplan Motoru: AKTİF 🟢")
 
-# 3 SÜTUN GÖRSEL PANEL
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -328,13 +414,22 @@ with col_wallet:
     st.header("💼 Simüle Fon Yönetimi")
     canli_kasa_bakiyesi = oku_kasa_bakiyesi()
     st.info(f"💰 Toplam Kasa Bakiyesi: **{canli_kasa_bakiyesi:,.2f} USDT**")
-    st.success(f"📈 Backtest Başarı Kanıtı: **%100 BAŞARI** (Son 500 Saat Verisi)")
+
+    st.subheader("📈 Gerçek Backtest Sonucu (BTC, son 30 gün)")
+    bt_sonuc = gercek_backtest_yap("BTCUSDT", gun_sayisi=30)
+    if bt_sonuc:
+        bt_col1, bt_col2, bt_col3 = st.columns(3)
+        bt_col1.metric("Toplam Getiri", f"%{bt_sonuc['toplam_getiri_yuzde']:.2f}")
+        bt_col2.metric("Kazanma Oranı", f"%{bt_sonuc['kazanma_orani']:.1f}", help=f"{bt_sonuc['islem_sayisi']} işlem üzerinden")
+        bt_col3.metric("Maks. Düşüş", f"%{bt_sonuc['maks_dusus_yuzde']:.2f}", help="En kötü senaryoda ne kadar değer kaybedildiği")
+        st.caption("⚠️ Geçmiş performans gelecekteki sonuçların garantisi değildir. Bu sadece stratejinin geçmiş veri üzerindeki davranışını gösterir.")
+    else:
+        st.warning("Backtest verisi şu anda hesaplanamadı, birazdan tekrar dene.")
 
 with col_news:
     st.header("📰 Yapay Zeka Haber Duygusu")
     st.warning(f"🟢 Piyasa Havası: OLUMLU / NÖTR (Feshetme veya panik dalgası saptanmadı.)")
 
-# 📜 GEÇMİŞ SİNYAL LOG TABLOSU (Doğrudan Arkaplan Motorunun Kaydettiği Yerden Okur)
 st.markdown("---")
 st.header("📜 ZEYA Algoritma Seyir Defteri (7/24 Kesintisiz Hafıza Kayıtları)")
 df_log = oku_sinyal_deposu()
@@ -342,3 +437,7 @@ if not df_log.empty:
     st.dataframe(df_log, use_container_width=True)
 else:
     st.info("Arka plan motoru ilk verileri topluyor, tablo birazdan güncellenecektir...")
+
+st.markdown("---")
+if st.button("🔄 Ekranı Manuel Yenile"):
+    st.rerun()
