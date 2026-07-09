@@ -17,13 +17,7 @@ import os
 # ==========================================================
 # 🔑 BINANCE API AYARLARI (GÜVENLİ YÖNTEM: st.secrets / ortam değişkeni)
 # ==========================================================
-# ÖNEMLİ: Anahtarları asla doğrudan kodun içine yazma!
-# Bunun yerine .streamlit/secrets.toml dosyasına şunları ekle:
-#   BINANCE_API_KEY = "gerçek_anahtarın"
-#   BINANCE_SECRET_KEY = "gerçek_gizli_anahtarın"
-# Bu dosyayı ASLA GitHub'a veya başka bir yere yükleme (.gitignore'a ekle).
 def _anahtar_oku(isim):
-    # Önce Streamlit secrets'a bakar, yoksa ortam değişkenine (env variable) bakar
     try:
         return st.secrets[isim]
     except Exception:
@@ -80,7 +74,8 @@ def oku_kasa_bakiyesi():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
-    bakiye = cursor.fetchone()[0]
+    res = cursor.fetchone()
+    bakiye = res[0] if res else 10000.0
     conn.close()
     return bakiye
 
@@ -182,6 +177,9 @@ def analiz_ve_islem_yapi(symbol, emir_tetikle=False):
         import yfinance as yf
         yf_symbol = symbol.replace("USDT", "-USD")
         veri = yf.Ticker(yf_symbol).history(period="5d", interval="15m").tail(60)
+        if veri.empty or len(veri) < 20:
+            return 0.0, 50.0, pd.DataFrame([0]*60, columns=['close']), "🟡 NÖTR", 50.0, "#f1c40f", "❌ Veri Eksik", 0.0
+            
         kapanis_fiyatlari = veri['Close'].tolist()
         df = pd.DataFrame(kapanis_fiyatlari, columns=['close'])
         anlik_fiyat = kapanis_fiyatlari[-1]
@@ -235,20 +233,15 @@ def analiz_ve_islem_yapi(symbol, emir_tetikle=False):
         return 0.0, 50.0, pd.DataFrame([0]*60, columns=['close']), "🟡 NÖTR", 50.0, "#f1c40f", f"❌ Hata", 0.0
 
 # ==========================================================
-# 📊 GERÇEK BACKTEST MOTORU (Sahte "%100 başarı" yazısının yerine)
+# 📊 GERÇEK BACKTEST MOTORU
 # ==========================================================
-@st.cache_data(ttl=3600)  # Sonucu 1 saat boyunca önbellekte tutar, her yenilemede yeniden hesaplamaz
+@st.cache_data(ttl=3600)
 def gercek_backtest_yap(symbol, gun_sayisi=30):
-    """
-    Geçmiş veride, botun kullandığı AYNI karar mantığını adım adım uygular.
-    Gerçek bir kâr/zarar, kazanma oranı ve maksimum düşüş (drawdown) hesaplar.
-    Bu fonksiyon hiçbir şeyi hardcode etmez; tüm sonuçlar veriden hesaplanır.
-    """
     try:
         import yfinance as yf
         yf_symbol = symbol.replace("USDT", "-USD")
         veri = yf.Ticker(yf_symbol).history(period=f"{gun_sayisi}d", interval="1h")
-        if len(veri) < 60:
+        if veri.empty or len(veri) < 60:
             return None
 
         df = pd.DataFrame(veri['Close'].tolist(), columns=['close'])
@@ -293,17 +286,15 @@ def gercek_backtest_yap(symbol, gun_sayisi=30):
                 pozisyon_miktar = 0.0
                 pozisyon_giris = 0.0
 
-            guncel_toplam_deger = sanal_bakiye + (pozisyon_miktar * satir['close'])
-            toplam_deger_gecmisi.append(guncel_toplam_deger)
+            guncelleme_degeri = sanal_bakiye + (pozisyon_miktar * satir['close'])
+            toplam_deger_gecmisi.append(guncelleme_degeri)
 
-        # Açık pozisyon varsa son fiyattan kapat
         if pozisyon_miktar > 0:
             sanal_bakiye += pozisyon_miktar * df.iloc[-1]['close']
 
         if not toplam_deger_gecmisi:
             return None
 
-        # Maksimum düşüş (drawdown) hesabı
         deger_serisi = pd.Series(toplam_deger_gecmisi)
         zirve = deger_serisi.cummax()
         dususler = (deger_serisi - zirve) / zirve
@@ -347,7 +338,7 @@ def kesintisiz_bot_dongusu():
             gecmis = pd.read_sql_query("SELECT btc_fiyat FROM sinyal_deposu ORDER BY id DESC LIMIT 1", conn)
             conn.close()
             
-            if gecmis.empty or gecmis.iloc[0]["btc_fiyat"] != yeni_log["BTC Fiyat"]:
+            if btc_f > 0.0 and (gecmis.empty or gecmis.iloc[0]["btc_fiyat"] != yeni_log["BTC Fiyat"]):
                 yeni_sinyal_ekle(yeni_log)
                 
         except Exception as e:
@@ -375,7 +366,7 @@ st.markdown("""
     <div style='text-align: center; background-color: #111111; padding: 20px; border-radius: 15px; border: 1px solid #D4AF37; margin-bottom: 25px;'>
         <h1 style='color: #D4AF37; font-family: "Arial Black", Gadget, sans-serif; letter-spacing: 5px; font-size: 45px; margin: 0;'>Z E Y A</h1>
         <p style='color: #888888; font-family: "Courier New", monospace; font-size: 14px; margin-top: 5px; margin-bottom: 0;'>
-            ⚡ 24/7 AUTONOMOUS BACKGROUND ENGINE & LIFETIME DATABASE ACTIVE ⚡
+            ⚡ 7/24 AUTONOMOUS BACKGROUND ENGINE & LIFETIME DATABASE ACTIVE ⚡
         </p>
     </div>
 """, unsafe_allow_html=True)
@@ -385,7 +376,7 @@ if GERCEK_ISLEM_AKTIF:
     st.sidebar.error("🤖 Otomatik Emir Modu: GERÇEK PİYASA")
 else:
     st.sidebar.warning("🧪 Otomatik Emir Modu: SİMÜLASYON (TEST)")
-st.sidebar.success("7/24 Kesintisiz Arkaplan Motoru: AKTİF 🟢")
+st.sidebar.success("Kesintisiz Arkaplan Motoru: AKTİF 🟢")
 
 col1, col2, col3 = st.columns(3)
 
@@ -437,7 +428,3 @@ if not df_log.empty:
     st.dataframe(df_log, use_container_width=True)
 else:
     st.info("Arka plan motoru ilk verileri topluyor, tablo birazdan güncellenecektir...")
-
-st.markdown("---")
-if st.button("🔄 Ekranı Manuel Yenile"):
-    st.rerun()
