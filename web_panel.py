@@ -13,6 +13,8 @@ from datetime import datetime
 import sqlite3
 import threading
 import os
+import smtplib
+from email.mime.text import MIMEText
 
 # ==========================================================
 # 🔑 BINANCE API AYARLARI (GÜVENLİ YÖNTEM: st.secrets / ortam değişkeni)
@@ -32,6 +34,30 @@ def _anahtar_oku(isim):
 BINANCE_API_KEY = _anahtar_oku("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = _anahtar_oku("BINANCE_SECRET_KEY")
 GERCEK_ISLEM_AKTIF = False  # Gerçek al-sat için burayı True yapmalısın!
+
+# ==========================================================
+# 📱 TELEGRAM BİLDİRİM AYARLARI (GÜVENLİ YÖNTEM: st.secrets / ortam değişkeni)
+# ==========================================================
+# .streamlit/secrets.toml dosyasına şunları ekle:
+#   TELEGRAM_BOT_TOKEN = "botfather_dan_aldigin_token"
+#   TELEGRAM_CHAT_ID = "chat_id_numaran"
+TELEGRAM_BOT_TOKEN = _anahtar_oku("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = _anahtar_oku("TELEGRAM_CHAT_ID")
+
+# ==========================================================
+# ✉️ E-POSTA BİLDİRİM AYARLARI (tamamen bağımsız, üçüncü parti "app" gerektirmez)
+# ==========================================================
+# .streamlit/secrets.toml dosyasına şunları ekle (Gmail kullanıyorsan "Uygulama Şifresi" oluşturman gerekir):
+#   SMTP_SUNUCU = "smtp.gmail.com"
+#   SMTP_PORT = "587"
+#   SMTP_EPOSTA = "gonderen_hesabin@gmail.com"
+#   SMTP_SIFRE = "uygulama_sifresi"
+#   ALICI_EPOSTA = "bildirim_almak_istedigin@eposta.com"
+SMTP_SUNUCU = _anahtar_oku("SMTP_SUNUCU")
+SMTP_PORT = _anahtar_oku("SMTP_PORT")
+SMTP_EPOSTA = _anahtar_oku("SMTP_EPOSTA")
+SMTP_SIFRE = _anahtar_oku("SMTP_SIFRE")
+ALICI_EPOSTA = _anahtar_oku("ALICI_EPOSTA")
 
 # SAYFA GENİŞLİK VE MARKA AYARLARI
 st.set_page_config(page_title="ZEYA - Yapay Zeka Kripto Ticaret Paneli", page_icon="Z", layout="wide", initial_sidebar_state="expanded")
@@ -91,6 +117,15 @@ def veritabani_kur():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tarih_saat TEXT,
             toplam_varlik REAL
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bildirimler (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tarih_saat TEXT,
+            tur TEXT,
+            mesaj TEXT,
+            okundu INTEGER DEFAULT 0
         )
     """)
     cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
@@ -166,6 +201,68 @@ def varlik_anlik_kaydet(toplam_varlik):
     cursor = conn.cursor()
     su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     cursor.execute("INSERT INTO varlik_gecmisi (tarih_saat, toplam_varlik) VALUES (?, ?)", (su_an, toplam_varlik))
+    conn.commit()
+    conn.close()
+
+def telegram_bildirim_gonder(mesaj):
+    """Telegram üzerinden bildirim gönderir. Token/Chat ID eksikse veya hata olursa
+    sessizce geçer — bildirim hatası yüzünden botun al-sat mantığı asla durmamalı.
+    NOT: Bu isteğe bağlı ekstra bir kanaldır. Asıl bildirim sistemi uygulama içi
+    'Bildirim Merkezi' (bildirim_ekle / oku_bildirimler) — dış servise ihtiyaç duymaz."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": mesaj}, timeout=5)
+    except Exception as e:
+        print(f"Telegram bildirim hatası: {e}")
+
+def eposta_bildirim_gonder(konu, mesaj):
+    """SMTP üzerinden doğrudan e-posta gönderir — Telegram gibi üçüncü parti bir
+    'app' platformuna değil, evrensel bir protokole (SMTP) dayanır. Ayarlar eksikse
+    veya hata olursa sessizce geçer, bot mantığını asla durdurmaz."""
+    if not all([SMTP_SUNUCU, SMTP_PORT, SMTP_EPOSTA, SMTP_SIFRE, ALICI_EPOSTA]):
+        return
+    try:
+        eposta = MIMEText(mesaj, "plain", "utf-8")
+        eposta["Subject"] = konu
+        eposta["From"] = SMTP_EPOSTA
+        eposta["To"] = ALICI_EPOSTA
+        with smtplib.SMTP(SMTP_SUNUCU, int(SMTP_PORT), timeout=10) as sunucu:
+            sunucu.starttls()
+            sunucu.login(SMTP_EPOSTA, SMTP_SIFRE)
+            sunucu.send_message(eposta)
+    except Exception as e:
+        print(f"E-posta bildirim hatası: {e}")
+
+def bildirim_ekle(tur, mesaj):
+    """Uygulama içi bildirim merkezine yeni bir kayıt ekler. Tamamen bağımsız,
+    hiçbir dış servise ihtiyaç duymaz — veriler doğrudan kendi veritabanımızda durur."""
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    cursor = conn.cursor()
+    su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    cursor.execute("INSERT INTO bildirimler (tarih_saat, tur, mesaj, okundu) VALUES (?, ?, ?, 0)", (su_an, tur, mesaj))
+    conn.commit()
+    conn.close()
+
+def oku_bildirimler(limit=30):
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    df = pd.read_sql_query(f"SELECT id, tarih_saat, tur, mesaj, okundu FROM bildirimler ORDER BY id DESC LIMIT {limit}", conn)
+    conn.close()
+    return df
+
+def okunmamis_bildirim_sayisi():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM bildirimler WHERE okundu = 0")
+    sayi = cursor.fetchone()[0]
+    conn.close()
+    return sayi
+
+def tum_bildirimleri_okundu_yap():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE bildirimler SET okundu = 1 WHERE okundu = 0")
     conn.commit()
     conn.close()
 
@@ -313,6 +410,9 @@ def analiz_ve_islem_yapi(symbol, emir_tetikle=False):
                         islem_raporu = "🛑 STOP-LOSS: " + binance_emir_gonder(symbol, "SELL")
                         pozisyon_sil(symbol)
                     zorla_kapatildi = True
+                    telegram_bildirim_gonder(f"🛑 ZEYA: {symbol} STOP-LOSS tetiklendi.\nKâr/Zarar: %{kar_zarar_yuzde:.2f}\nFiyat: {anlik_fiyat:,.2f} USDT")
+                    bildirim_ekle("STOP-LOSS", f"🛑 {symbol} STOP-LOSS tetiklendi. Kâr/Zarar: %{kar_zarar_yuzde:.2f} (Fiyat: {anlik_fiyat:,.2f} USDT)")
+                    eposta_bildirim_gonder(f"🛑 ZEYA: {symbol} Stop-Loss Tetiklendi", f"{symbol} pozisyonu stop-loss ile kapatıldı.\nKâr/Zarar: %{kar_zarar_yuzde:.2f}\nFiyat: {anlik_fiyat:,.2f} USDT")
                 elif kar_zarar_yuzde >= ayarlar["take_profit_yuzde"]:
                     if not GERCEK_ISLEM_AKTIF:
                         iade_tutar = miktar * anlik_fiyat
@@ -323,6 +423,9 @@ def analiz_ve_islem_yapi(symbol, emir_tetikle=False):
                         islem_raporu = "🎯 TAKE-PROFIT: " + binance_emir_gonder(symbol, "SELL")
                         pozisyon_sil(symbol)
                     zorla_kapatildi = True
+                    telegram_bildirim_gonder(f"🎯 ZEYA: {symbol} TAKE-PROFIT tetiklendi.\nKâr/Zarar: %{kar_zarar_yuzde:.2f}\nFiyat: {anlik_fiyat:,.2f} USDT")
+                    bildirim_ekle("TAKE-PROFIT", f"🎯 {symbol} TAKE-PROFIT tetiklendi. Kâr/Zarar: %{kar_zarar_yuzde:.2f} (Fiyat: {anlik_fiyat:,.2f} USDT)")
+                    eposta_bildirim_gonder(f"🎯 ZEYA: {symbol} Take-Profit Tetiklendi", f"{symbol} pozisyonu take-profit ile kapatıldı.\nKâr/Zarar: %{kar_zarar_yuzde:.2f}\nFiyat: {anlik_fiyat:,.2f} USDT")
 
             # --- STOP-LOSS/TAKE-PROFIT TETİKLENMEDİYSE NORMAL SİNYAL MANTIĞI ÇALIŞIR ---
             if not zorla_kapatildi and aksiyon in ["BUY", "SELL"]:
@@ -342,6 +445,9 @@ def analiz_ve_islem_yapi(symbol, emir_tetikle=False):
                             pozisyon_kaydet(symbol, anlik_fiyat, miktar)
                             guncelle_kasa_bakiyesi(yeni_bakiye)
                             islem_raporu = f"🧪 ALIM Yapıldı. Miktar: {miktar:.4f}"
+                            telegram_bildirim_gonder(f"🟢 ZEYA: {symbol} ALIM yapıldı.\nFiyat: {anlik_fiyat:,.2f} USDT\nMiktar: {miktar:.4f}")
+                            bildirim_ekle("ALIM", f"🟢 {symbol} ALIM yapıldı. Fiyat: {anlik_fiyat:,.2f} USDT, Miktar: {miktar:.4f}")
+                            eposta_bildirim_gonder(f"🟢 ZEYA: {symbol} Alım Yapıldı", f"{symbol} için yeni pozisyon açıldı.\nFiyat: {anlik_fiyat:,.2f} USDT\nMiktar: {miktar:.4f}")
                         elif islem_tutari > 10:
                             islem_raporu = f"⚠️ Alım yapılmadı: Toplam pozisyon limiti doldu (Limit: %{ayarlar['maks_toplam_pozisyon_yuzde']:.0f})"
                     elif "SELL" in aksiyon and aktif_pozisyon:
@@ -352,6 +458,9 @@ def analiz_ve_islem_yapi(symbol, emir_tetikle=False):
                         guncelle_kasa_bakiyesi(yeni_bakiye)
                         kar_zarar = ((anlik_fiyat - giris_fiyati) / giris_fiyati) * 100
                         islem_raporu = f"🧪 SATIM Yapıldı. Kâr/Zarar: %{kar_zarar:.2f}"
+                        telegram_bildirim_gonder(f"🔴 ZEYA: {symbol} SATIM yapıldı.\nFiyat: {anlik_fiyat:,.2f} USDT\nKâr/Zarar: %{kar_zarar:.2f}")
+                        bildirim_ekle("SATIM", f"🔴 {symbol} SATIM yapıldı. Fiyat: {anlik_fiyat:,.2f} USDT, Kâr/Zarar: %{kar_zarar:.2f}")
+                        eposta_bildirim_gonder(f"🔴 ZEYA: {symbol} Satım Yapıldı", f"{symbol} pozisyonu kapatıldı.\nFiyat: {anlik_fiyat:,.2f} USDT\nKâr/Zarar: %{kar_zarar:.2f}")
                 else:
                     islem_raporu = binance_emir_gonder(symbol, aksiyon)
         else:
@@ -529,12 +638,37 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
+# ==========================================================
+# 🔔 BİLDİRİM MERKEZİ (uygulama içi, hiçbir dış servise bağımlı değil)
+# ==========================================================
+_okunmamis_sayi = okunmamis_bildirim_sayisi()
+_bildirim_baslik = f"🔔 Bildirim Merkezi" + (f" ({_okunmamis_sayi} okunmamış)" if _okunmamis_sayi > 0 else "")
+with st.expander(_bildirim_baslik, expanded=(_okunmamis_sayi > 0)):
+    df_bildirim = oku_bildirimler(limit=30)
+    if df_bildirim.empty:
+        st.caption("Henüz bildirim yok. Bot bir alım/satım/stop-loss/take-profit gerçekleştirdiğinde burada görünecek.")
+    else:
+        if _okunmamis_sayi > 0 and st.button("✅ Tümünü okundu olarak işaretle"):
+            tum_bildirimleri_okundu_yap()
+            st.rerun()
+        for _, satir in df_bildirim.iterrows():
+            _isaret = "🆕 " if satir["okundu"] == 0 else ""
+            st.markdown(f"{_isaret}**{satir['tarih_saat']}** — {satir['mesaj']}")
+
 st.sidebar.header("👁️ Robot Sistem Durumu")
 if GERCEK_ISLEM_AKTIF:
     st.sidebar.error("🤖 Otomatik Emir Modu: GERÇEK PİYASA")
 else:
     st.sidebar.warning("🧪 Otomatik Emir Modu: SİMÜLASYON (TEST)")
 st.sidebar.success(" Kesintisiz Arkaplan Motoru: AKTİF 🟢")
+if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+    st.sidebar.success("📱 Telegram Bildirimleri: AKTİF 🟢")
+else:
+    st.sidebar.info("📱 Telegram Bildirimleri: Kapalı (isteğe bağlı)")
+if all([SMTP_SUNUCU, SMTP_PORT, SMTP_EPOSTA, SMTP_SIFRE, ALICI_EPOSTA]):
+    st.sidebar.success("✉️ E-posta Bildirimleri: AKTİF 🟢")
+else:
+    st.sidebar.info("✉️ E-posta Bildirimleri: Kapalı (isteğe bağlı)")
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ Risk Yönetimi Ayarları")
