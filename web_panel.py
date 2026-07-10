@@ -37,11 +37,13 @@ GERCEK_ISLEM_AKTIF = False  # Gerçek al-sat için burayı True yapmalısın!
 st.set_page_config(page_title="ZEYA - Yapay Zeka Kripto Ticaret Paneli", page_icon="Z", layout="wide", initial_sidebar_state="expanded")
 
 # STREAMLIT LOGOLARINI GİZLEME KODU
+# NOT: "header" elementini tamamen gizlemiyoruz çünkü sidebar açma/kapama
+# oku bazı Streamlit sürümlerinde header'ın içinde yer alıyor ve onu da
+# gizleyip geri açılamaz hale getirebiliyor. Sadece MainMenu ve footer'ı gizliyoruz.
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
     stDecoration {display:none !important;}
     /* Sidebar açma/kapama oku her zaman görünür ve tıklanabilir kalsın */
     [data-testid="collapsedControl"] {
