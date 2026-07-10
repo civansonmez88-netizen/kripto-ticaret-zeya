@@ -86,6 +86,13 @@ def veritabani_kur():
             maks_toplam_pozisyon_yuzde REAL
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS varlik_gecmisi (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tarih_saat TEXT,
+            toplam_varlik REAL
+        )
+    """)
     cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
     if cursor.fetchone() is None:
         cursor.execute("INSERT INTO kasa (id, bakiye) VALUES (1, 10000.0)")
@@ -153,6 +160,20 @@ def oku_tum_pozisyonlar():
     res = cursor.fetchall()
     conn.close()
     return res
+
+def varlik_anlik_kaydet(toplam_varlik):
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    cursor = conn.cursor()
+    su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    cursor.execute("INSERT INTO varlik_gecmisi (tarih_saat, toplam_varlik) VALUES (?, ?)", (su_an, toplam_varlik))
+    conn.commit()
+    conn.close()
+
+def oku_varlik_gecmisi():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    df = pd.read_sql_query("SELECT tarih_saat, toplam_varlik FROM varlik_gecmisi ORDER BY id ASC", conn)
+    conn.close()
+    return df
 
 def oku_pozisyon(parite):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -460,7 +481,19 @@ def kesintisiz_bot_dongusu():
             
             if gecmis.empty or gecmis.iloc[0]["btc_fiyat"] != yeni_log["BTC Fiyat"]:
                 yeni_sinyal_ekle(yeni_log)
-                
+
+            # 3. Toplam varlığı (kasa + açık pozisyonların güncel değeri) hesaplayıp
+            #    varlık geçmişine kaydet. Bu, performans grafiğinin veri kaynağıdır.
+            guncel_fiyatlar = {"BTCUSDT": btc_f, "ETHUSDT": eth_f, "SOLUSDT": sol_f}
+            mevcut_bakiye = oku_kasa_bakiyesi()
+            tum_pozisyonlar = oku_tum_pozisyonlar()
+            pozisyon_degeri = sum(
+                miktar * guncel_fiyatlar.get(parite, giris_fiyati)
+                for parite, giris_fiyati, miktar in tum_pozisyonlar
+            )
+            toplam_varlik = mevcut_bakiye + pozisyon_degeri
+            varlik_anlik_kaydet(toplam_varlik)
+
         except Exception as e:
             print(f"Arkaplan Bot Hatası: {e}")
             
@@ -576,6 +609,28 @@ with col_wallet:
 with col_news:
     st.header("📰 Yapay Zeka Haber Duygusu")
     st.warning(f"🟢 Piyasa Havası: OLUMLU / NÖTR (Feshetme veya panik dalgası saptanmadı.)")
+
+# ==========================================================
+# 📈 GERÇEK PERFORMANS GRAFİĞİ (VARLIK EĞRİSİ)
+# ==========================================================
+st.markdown("---")
+st.header("📈 Gerçek Zamanlı Performans (Varlık Eğrisi)")
+st.caption("Arka plan motoru her 15 dakikada bir toplam varlığını (kasa + açık pozisyonların güncel değeri) kaydeder. Bu grafik botun gerçek geçmiş performansını gösterir — geriye dönük bir tahmin değil.")
+df_varlik = oku_varlik_gecmisi()
+if len(df_varlik) >= 2:
+    baslangic_varlik = 10000.0
+    guncel_varlik = df_varlik['toplam_varlik'].iloc[-1]
+    toplam_getiri_yuzde = ((guncel_varlik - baslangic_varlik) / baslangic_varlik) * 100
+
+    perf_col1, perf_col2, perf_col3 = st.columns(3)
+    perf_col1.metric("Başlangıç Varlığı", f"{baslangic_varlik:,.2f} USDT")
+    perf_col2.metric("Güncel Toplam Varlık", f"{guncel_varlik:,.2f} USDT", delta=f"%{toplam_getiri_yuzde:.2f}")
+    perf_col3.metric("Kayıt Sayısı", f"{len(df_varlik)} ölçüm")
+
+    grafik_df = df_varlik.set_index('tarih_saat')[['toplam_varlik']]
+    st.line_chart(grafik_df)
+else:
+    st.info("Arka plan motoru henüz yeterli veri toplamadı. İlk grafik, motor birkaç kez çalıştıktan sonra (birkaç saat içinde) burada görünecek.")
 
 # 📜 GEÇMİŞ SİNYAL LOG TABLOSU (Doğrudan Arkaplan Motorunun Kaydettiği Yerden Okur)
 st.markdown("---")
