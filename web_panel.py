@@ -82,16 +82,26 @@ def veritabani_kur():
             id INTEGER PRIMARY KEY,
             stop_loss_yuzde REAL,
             take_profit_yuzde REAL,
-            pozisyon_buyuklugu_yuzde REAL
+            pozisyon_buyuklugu_yuzde REAL,
+            maks_toplam_pozisyon_yuzde REAL
         )
     """)
     cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
     if cursor.fetchone() is None:
         cursor.execute("INSERT INTO kasa (id, bakiye) VALUES (1, 10000.0)")
+
+    # Eski veritabanlarında "maks_toplam_pozisyon_yuzde" sütunu olmayabilir.
+    # Yoksa ekliyoruz (migration) — böylece mevcut kullanıcıların verisi kaybolmaz.
+    cursor.execute("PRAGMA table_info(ayarlar)")
+    mevcut_sutunlar = [satir[1] for satir in cursor.fetchall()]
+    if "maks_toplam_pozisyon_yuzde" not in mevcut_sutunlar:
+        cursor.execute("ALTER TABLE ayarlar ADD COLUMN maks_toplam_pozisyon_yuzde REAL DEFAULT 50.0")
+
     cursor.execute("SELECT id FROM ayarlar WHERE id = 1")
     if cursor.fetchone() is None:
-        # Varsayılan risk ayarları: %-5 stop-loss, %+10 take-profit, işlem başına %15 sermaye
-        cursor.execute("INSERT INTO ayarlar (id, stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde) VALUES (1, -5.0, 10.0, 15.0)")
+        # Varsayılan risk ayarları: %-5 stop-loss, %+10 take-profit, işlem başına %15 sermaye,
+        # kasanın en fazla %50'si aynı anda pozisyonlarda olabilir
+        cursor.execute("INSERT INTO ayarlar (id, stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde) VALUES (1, -5.0, 10.0, 15.0, 50.0)")
     conn.commit()
     conn.close()
 
@@ -115,20 +125,34 @@ def guncelle_kasa_bakiyesi(yeni_bakiye):
 def oku_ayarlar():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("SELECT stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde FROM ayarlar WHERE id = 1")
-    sl, tp, pb = cursor.fetchone()
+    cursor.execute("SELECT stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde FROM ayarlar WHERE id = 1")
+    sl, tp, pb, maks_toplam = cursor.fetchone()
     conn.close()
-    return {"stop_loss_yuzde": sl, "take_profit_yuzde": tp, "pozisyon_buyuklugu_yuzde": pb}
+    return {
+        "stop_loss_yuzde": sl,
+        "take_profit_yuzde": tp,
+        "pozisyon_buyuklugu_yuzde": pb,
+        "maks_toplam_pozisyon_yuzde": maks_toplam if maks_toplam is not None else 50.0,
+    }
 
-def guncelle_ayarlar(stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde):
+def guncelle_ayarlar(stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute(
-        "UPDATE ayarlar SET stop_loss_yuzde = ?, take_profit_yuzde = ?, pozisyon_buyuklugu_yuzde = ? WHERE id = 1",
-        (stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde)
+        "UPDATE ayarlar SET stop_loss_yuzde = ?, take_profit_yuzde = ?, pozisyon_buyuklugu_yuzde = ?, maks_toplam_pozisyon_yuzde = ? WHERE id = 1",
+        (stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde)
     )
     conn.commit()
     conn.close()
+
+def oku_tum_pozisyonlar():
+    """Tüm açık pozisyonları döner: [(parite, giris_fiyati, miktar), ...]"""
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT parite, giris_fiyati, miktar FROM pozisyonlar")
+    res = cursor.fetchall()
+    conn.close()
+    return res
 
 def oku_pozisyon(parite):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -285,13 +309,20 @@ def analiz_ve_islem_yapi(symbol, emir_tetikle=False):
                 mevcut_bakiye = oku_kasa_bakiyesi()
                 if not GERCEK_ISLEM_AKTIF:
                     if "BUY" in aksiyon and not aktif_pozisyon:
+                        tum_pozisyonlar = oku_tum_pozisyonlar()
+                        toplam_yatirilan = sum(gf * m for _, gf, m in tum_pozisyonlar)
+                        toplam_varlik = mevcut_bakiye + toplam_yatirilan
                         islem_tutari = mevcut_bakiye * (ayarlar["pozisyon_buyuklugu_yuzde"] / 100)
-                        if islem_tutari > 10:
+                        maks_izin_verilen = toplam_varlik * (ayarlar["maks_toplam_pozisyon_yuzde"] / 100)
+
+                        if islem_tutari > 10 and (toplam_yatirilan + islem_tutari) <= maks_izin_verilen:
                             yeni_bakiye = mevcut_bakiye - islem_tutari
                             miktar = islem_tutari / anlik_fiyat
                             pozisyon_kaydet(symbol, anlik_fiyat, miktar)
                             guncelle_kasa_bakiyesi(yeni_bakiye)
                             islem_raporu = f"🧪 ALIM Yapıldı. Miktar: {miktar:.4f}"
+                        elif islem_tutari > 10:
+                            islem_raporu = f"⚠️ Alım yapılmadı: Toplam pozisyon limiti doldu (Limit: %{ayarlar['maks_toplam_pozisyon_yuzde']:.0f})"
                     elif "SELL" in aksiyon and aktif_pozisyon:
                         giris_fiyati, miktar = aktif_pozisyon
                         iade_tutar = miktar * anlik_fiyat
@@ -490,10 +521,16 @@ _yeni_pozisyon_buyuklugu = st.sidebar.slider(
     value=float(_mevcut_ayarlar["pozisyon_buyuklugu_yuzde"]), step=5.0,
     help="Her alım işleminde kasanın yüzde kaçının kullanılacağı."
 )
+_yeni_maks_toplam_pozisyon = st.sidebar.slider(
+    "📊 Toplam Pozisyon Limiti (%)", min_value=10.0, max_value=100.0,
+    value=float(_mevcut_ayarlar["maks_toplam_pozisyon_yuzde"]), step=5.0,
+    help="Tüm açık pozisyonların (BTC+ETH+SOL) toplamda kasanın en fazla yüzde kaçını kullanabileceği. Örn: %50 demek, aynı anda en fazla yarı sermaye riske girer."
+)
 if (_yeni_stop_loss != _mevcut_ayarlar["stop_loss_yuzde"]
         or _yeni_take_profit != _mevcut_ayarlar["take_profit_yuzde"]
-        or _yeni_pozisyon_buyuklugu != _mevcut_ayarlar["pozisyon_buyuklugu_yuzde"]):
-    guncelle_ayarlar(_yeni_stop_loss, _yeni_take_profit, _yeni_pozisyon_buyuklugu)
+        or _yeni_pozisyon_buyuklugu != _mevcut_ayarlar["pozisyon_buyuklugu_yuzde"]
+        or _yeni_maks_toplam_pozisyon != _mevcut_ayarlar["maks_toplam_pozisyon_yuzde"]):
+    guncelle_ayarlar(_yeni_stop_loss, _yeni_take_profit, _yeni_pozisyon_buyuklugu, _yeni_maks_toplam_pozisyon)
     st.sidebar.success("✅ Ayarlar kaydedildi. Arka plan motoru bir sonraki döngüde bu ayarları kullanacak.")
 
 # 3 SÜTUN GÖRSEL PANEL
