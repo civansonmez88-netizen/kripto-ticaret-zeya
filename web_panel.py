@@ -34,7 +34,7 @@ BINANCE_SECRET_KEY = _anahtar_oku("BINANCE_SECRET_KEY")
 GERCEK_ISLEM_AKTIF = False  # Gerçek al-sat için burayı True yapmalısın!
 
 # SAYFA GENİŞLİK VE MARKA AYARLARI
-st.set_page_config(page_title="ZEYA - Yapay Zeka Kripto Ticaret Paneli", page_icon="Z", layout="wide")
+st.set_page_config(page_title="ZEYA - Yapay Zeka Kripto Ticaret Paneli", page_icon="Z", layout="wide", initial_sidebar_state="expanded")
 
 # STREAMLIT LOGOLARINI GİZLEME KODU
 st.markdown("""
@@ -43,6 +43,12 @@ st.markdown("""
     footer {visibility: hidden;}
     header {visibility: hidden;}
     stDecoration {display:none !important;}
+    /* Sidebar açma/kapama oku her zaman görünür ve tıklanabilir kalsın */
+    [data-testid="collapsedControl"] {
+        visibility: visible !important;
+        display: block !important;
+        opacity: 1 !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
