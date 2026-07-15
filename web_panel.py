@@ -378,6 +378,21 @@ def yeni_sinyal_ekle(log_dict):
     conn.commit()
     conn.close()
 
+def binance_veri_al(symbol, interval="15m", limit=100):
+    """Binance'in herkese açık (API anahtarı GEREKTİRMEYEN) piyasa verisi uç
+    noktasından mum (kline) verisi çeker. yfinance gibi üçüncü parti bir veri
+    sağlayıcısına değil, doğrudan borsanın kendisine bağlanıyoruz — bu hem daha
+    güncel/güvenilir veri demek hem de bir bağımlılık daha azaldı demek.
+    symbol örnek: 'BTCUSDT'. interval: '15m', '1h' gibi. limit: en fazla 1000."""
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    response = requests.get(url, params=params, timeout=10)
+    response.raise_for_status()
+    veri = response.json()
+    # Her mum şu formatta gelir: [açılış_zamanı, açılış, en_yüksek, en_düşük, kapanış, hacim, ...]
+    kapanis_fiyatlari = [float(mum[4]) for mum in veri]
+    return kapanis_fiyatlari
+
 # ==========================================================
 # ⚙️ BOT ALGORİTMİK MANTIĞI VE EMİR MOTORU
 # ==========================================================
@@ -433,10 +448,7 @@ def analiz_ve_islem_yapi(symbol, emir_tetikle=False):
     emir_tetikle=False: Ön yüz paneli çalıştırır (Sadece anlık gösterim yapar, cüzdana dokunmaz).
     """
     try:
-        import yfinance as yf
-        yf_symbol = symbol.replace("USDT", "-USD")
-        veri = yf.Ticker(yf_symbol).history(period="5d", interval="15m").tail(60)
-        kapanis_fiyatlari = veri['Close'].tolist()
+        kapanis_fiyatlari = binance_veri_al(symbol, interval="15m", limit=100)
         df = pd.DataFrame(kapanis_fiyatlari, columns=['close'])
         anlik_fiyat = kapanis_fiyatlari[-1]
         
@@ -554,13 +566,13 @@ def gercek_backtest_yap(symbol, gun_sayisi=30):
     Bu fonksiyon hiçbir şeyi hardcode etmez; tüm sonuçlar veriden hesaplanır.
     """
     try:
-        import yfinance as yf
-        yf_symbol = symbol.replace("USDT", "-USD")
-        veri = yf.Ticker(yf_symbol).history(period=f"{gun_sayisi}d", interval="1h")
-        if len(veri) < 60:
+        # Binance saatlik mum limiti 1000'dir; 30 gün = 720 saat, rahatça sığar.
+        limit = min(gun_sayisi * 24, 1000)
+        kapanis_fiyatlari = binance_veri_al(symbol, interval="1h", limit=limit)
+        if len(kapanis_fiyatlari) < 60:
             return None
 
-        df = pd.DataFrame(veri['Close'].tolist(), columns=['close'])
+        df = pd.DataFrame(kapanis_fiyatlari, columns=['close'])
         df['rsi'] = RSIIndicator(close=df['close'], window=14).rsi()
         macd_api = MACD(close=df['close'])
         df['macd'] = macd_api.macd()
