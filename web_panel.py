@@ -14,7 +14,22 @@ import sqlite3
 import threading
 import os
 import smtplib
+import logging
+import traceback
 from email.mime.text import MIMEText
+
+# ==========================================================
+# 🛠️ MERKEZİ HATA LOGLAMA SİSTEMİ
+# ==========================================================
+# Hem bir log dosyasına (geçici, sunucu yeniden başladığında silinebilir) hem de
+# veritabanına (kalıcı, arayüzden görülebilir) yazıyoruz. Böylece hiçbir hata
+# artık sessizce kaybolmuyor.
+logging.basicConfig(
+    filename="zeya_hatalar.log",
+    level=logging.ERROR,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger("ZEYA")
 
 # ==========================================================
 # 🔑 BINANCE API AYARLARI (GÜVENLİ YÖNTEM: st.secrets / ortam değişkeni)
@@ -128,6 +143,14 @@ def veritabani_kur():
             okundu INTEGER DEFAULT 0
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS hata_kayitlari (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tarih_saat TEXT,
+            kaynak TEXT,
+            hata_mesaji TEXT
+        )
+    """)
     cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
     if cursor.fetchone() is None:
         cursor.execute("INSERT INTO kasa (id, bakiye) VALUES (1, 10000.0)")
@@ -150,19 +173,26 @@ def veritabani_kur():
 veritabani_kur()
 
 def oku_kasa_bakiyesi():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
-    bakiye = cursor.fetchone()[0]
-    conn.close()
-    return bakiye
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
+        bakiye = cursor.fetchone()[0]
+        conn.close()
+        return bakiye
+    except Exception as e:
+        hata_logla("Kasa Bakiyesi Okuma", e)
+        return 0.0  # Güvenli varsayılan: hata durumunda 0 dönmek, yanlış (uydurma) bir bakiyeyle işlem yapmaktan daha güvenli
 
 def guncelle_kasa_bakiyesi(yeni_bakiye):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE kasa SET bakiye = ? WHERE id = 1", (yeni_bakiye,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE kasa SET bakiye = ? WHERE id = 1", (yeni_bakiye,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        hata_logla("Kasa Bakiyesi Güncelleme", e)
 
 def oku_ayarlar():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -215,7 +245,7 @@ def telegram_bildirim_gonder(mesaj):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": mesaj}, timeout=5)
     except Exception as e:
-        print(f"Telegram bildirim hatası: {e}")
+        hata_logla("Telegram Bildirim", e)
 
 def eposta_bildirim_gonder(konu, mesaj):
     """SMTP üzerinden doğrudan e-posta gönderir — Telegram gibi üçüncü parti bir
@@ -233,7 +263,7 @@ def eposta_bildirim_gonder(konu, mesaj):
             sunucu.login(SMTP_EPOSTA, SMTP_SIFRE)
             sunucu.send_message(eposta)
     except Exception as e:
-        print(f"E-posta bildirim hatası: {e}")
+        hata_logla("E-posta Bildirim", e)
 
 def bildirim_ekle(tur, mesaj):
     """Uygulama içi bildirim merkezine yeni bir kayıt ekler. Tamamen bağımsız,
@@ -272,27 +302,65 @@ def oku_varlik_gecmisi():
     conn.close()
     return df
 
-def oku_pozisyon(parite):
+def hata_logla(kaynak, hata):
+    """Her hatayı 3 yere kaydeder: (1) log dosyasına, (2) veritabanına (kalıcı,
+    arayüzden görülebilir), (3) konsola. Bu fonksiyon çağrılmadan bir except
+    bloğu SESSİZCE hata yutmamalı — bu kuralı tüm kodda takip ediyoruz."""
+    hata_metni = f"{hata}"
+    detay = traceback.format_exc()
+    logger.error(f"[{kaynak}] {hata_metni}\n{detay}")
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        cursor = conn.cursor()
+        su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        cursor.execute(
+            "INSERT INTO hata_kayitlari (tarih_saat, kaynak, hata_mesaji) VALUES (?, ?, ?)",
+            (su_an, kaynak, hata_metni)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        # Veritabanına bile yazılamıyorsa (örneğin dosya kilitliyse), en azından
+        # log dosyasına yazdık, burada sessizce geçiyoruz — sonsuz döngüye girmemek için.
+        pass
+
+def oku_hata_kayitlari(limit=20):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT giris_fiyati, miktar FROM pozisyonlar WHERE parite = ?", (parite,))
-    res = cursor.fetchone()
+    df = pd.read_sql_query(f"SELECT tarih_saat, kaynak, hata_mesaji FROM hata_kayitlari ORDER BY id DESC LIMIT {limit}", conn)
     conn.close()
-    return res
+    return df
+
+def oku_pozisyon(parite):
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT giris_fiyati, miktar FROM pozisyonlar WHERE parite = ?", (parite,))
+        res = cursor.fetchone()
+        conn.close()
+        return res
+    except Exception as e:
+        hata_logla(f"Pozisyon Okuma ({parite})", e)
+        return None
 
 def pozisyon_kaydet(parite, giris_fiyati, miktar):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO pozisyonlar (parite, giris_fiyati, miktar) VALUES (?, ?, ?)", (parite, giris_fiyati, miktar))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO pozisyonlar (parite, giris_fiyati, miktar) VALUES (?, ?, ?)", (parite, giris_fiyati, miktar))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        hata_logla(f"Pozisyon Kaydetme ({parite})", e)
 
 def pozisyon_sil(parite):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM pozisyonlar WHERE parite = ?", (parite,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM pozisyonlar WHERE parite = ?", (parite,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        hata_logla(f"Pozisyon Silme ({parite})", e)
 
 def oku_sinyal_deposu():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -334,7 +402,8 @@ def binance_emir_gonder(symbol, side, type="MARKET"):
         else:
             return f"❌ Hata: {res_data.get('msg', 'Bilinmeyen')}"
     except Exception as e:
-        return f"❌ Bağlantı Hatası"
+        hata_logla("Binance Emir Gönderme", e)
+        return "❌ Bağlantı Hatası (detay için Sistem Sağlığı loguna bak)"
 
 def yapay_zeka_karar_merkezi(rsi, macd, macd_sinyal, ema, close, egim, bb_alt):
     puan = 0
@@ -471,7 +540,8 @@ def analiz_ve_islem_yapi(symbol, emir_tetikle=False):
         
         return anlik_fiyat, df['rsi'].iloc[-1], df, karar, guven, renk, islem_raporu, egim
     except Exception as e:
-        return 0.0, 50.0, pd.DataFrame([0]*60, columns=['close']), "🟡 NÖTR", 50.0, "#f1c40f", f"❌ Hata", 0.0
+        hata_logla(f"Analiz ({symbol})", e)
+        return 0.0, 50.0, pd.DataFrame([0]*60, columns=['close']), "🟡 NÖTR", 50.0, "#f1c40f", "❌ Hata (detay için Sistem Sağlığı loguna bak)", 0.0
 
 # ==========================================================
 # 📊 GERÇEK BACKTEST MOTORU (Sahte "%100 başarı" yazısının yerine)
@@ -557,6 +627,7 @@ def gercek_backtest_yap(symbol, gun_sayisi=30):
             "gun_sayisi": gun_sayisi,
         }
     except Exception as e:
+        hata_logla(f"Backtest ({symbol})", e)
         return None
 
 # ==========================================================
@@ -604,7 +675,7 @@ def kesintisiz_bot_dongusu():
             varlik_anlik_kaydet(toplam_varlik)
 
         except Exception as e:
-            print(f"Arkaplan Bot Hatası: {e}")
+            hata_logla("Arka Plan Döngüsü", e)
             
         # 15 Dakika Uyku Modu (15 dakika = 900 saniye)
         time.sleep(900)
@@ -654,6 +725,19 @@ with st.expander(_bildirim_baslik, expanded=(_okunmamis_sayi > 0)):
         for _, satir in df_bildirim.iterrows():
             _isaret = "🆕 " if satir["okundu"] == 0 else ""
             st.markdown(f"{_isaret}**{satir['tarih_saat']}** — {satir['mesaj']}")
+
+# ==========================================================
+# 🛠️ SİSTEM SAĞLIĞI / HATA KAYITLARI (şeffaflık için — artık hiçbir hata gizli değil)
+# ==========================================================
+df_hata = oku_hata_kayitlari(limit=20)
+_hata_baslik = "🛠️ Sistem Sağlığı" + (f" ({len(df_hata)} kayıtlı hata)" if not df_hata.empty else " (Sorun yok ✅)")
+with st.expander(_hata_baslik, expanded=False):
+    if df_hata.empty:
+        st.success("✅ Son kayıtlarda herhangi bir hata yok. Sistem sorunsuz çalışıyor.")
+    else:
+        st.caption("Bu liste, botun arka planda karşılaştığı tüm hataları şeffaf şekilde gösterir. Bir hata sık tekrarlanıyorsa (örneğin API bağlantı sorunu), burada görünür.")
+        for _, satir in df_hata.iterrows():
+            st.markdown(f"🔴 **{satir['tarih_saat']}** — `{satir['kaynak']}`: {satir['hata_mesaji']}")
 
 st.sidebar.header("👁️ Robot Sistem Durumu")
 if GERCEK_ISLEM_AKTIF:
