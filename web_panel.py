@@ -381,10 +381,15 @@ def yeni_sinyal_ekle(log_dict):
 def binance_veri_al(symbol, interval="15m", limit=100):
     """Binance'in herkese açık (API anahtarı GEREKTİRMEYEN) piyasa verisi uç
     noktasından mum (kline) verisi çeker. yfinance gibi üçüncü parti bir veri
-    sağlayıcısına değil, doğrudan borsanın kendisine bağlanıyoruz — bu hem daha
-    güncel/güvenilir veri demek hem de bir bağımlılık daha azaldı demek.
+    sağlayıcısına değil, doğrudan borsanın kendisine bağlanıyoruz.
+
+    NOT: "data-api.binance.vision" kullanıyoruz, "api.binance.com" DEĞİL.
+    Çünkü ana api.binance.com adresi, ABD gibi bazı bölgelerdeki sunuculardan
+    (Streamlit Cloud dahil) gelen istekleri "451 Unavailable For Legal Reasons"
+    hatasıyla engelliyor. Binance'in kendi dokümantasyonu, SADECE genel piyasa
+    verisi çekmek için bu alternatif adresi öneriyor — coğrafi kısıtlaması yok.
     symbol örnek: 'BTCUSDT'. interval: '15m', '1h' gibi. limit: en fazla 1000."""
-    url = "https://api.binance.com/api/v3/klines"
+    url = "https://data-api.binance.vision/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
