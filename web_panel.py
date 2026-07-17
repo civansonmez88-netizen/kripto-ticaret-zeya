@@ -32,6 +32,23 @@ logging.basicConfig(
 logger = logging.getLogger("ZEYA")
 
 # ==========================================================
+# 🪙 DESTEKLENEN PARİTELER (kullanıcı sidebar'dan istediğini seçebilir)
+# ==========================================================
+PARITE_SECENEKLERI = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
+    "LTCUSDT", "TRXUSDT",
+]
+PARITE_GORUNEN_ISIM = {
+    "BTCUSDT": "🪙 Bitcoin (BTC)", "ETHUSDT": "🔹 Ethereum (ETH)", "SOLUSDT": "☀️ Solana (SOL)",
+    "BNBUSDT": "🟡 BNB", "XRPUSDT": "💧 XRP", "ADAUSDT": "🔵 Cardano (ADA)",
+    "DOGEUSDT": "🐕 Dogecoin (DOGE)", "AVAXUSDT": "🔺 Avalanche (AVAX)", "LINKUSDT": "🔗 Chainlink (LINK)",
+    "DOTUSDT": "⚫ Polkadot (DOT)", "LTCUSDT": "⚪ Litecoin (LTC)", "TRXUSDT": "🔴 TRON (TRX)",
+}
+def parite_gorunen_isim(symbol):
+    return PARITE_GORUNEN_ISIM.get(symbol, f"🪙 {symbol}")
+
+# ==========================================================
 # 🔑 BINANCE API AYARLARI (GÜVENLİ YÖNTEM: st.secrets / ortam değişkeni)
 # ==========================================================
 # ÖNEMLİ: Anahtarları asla doğrudan kodun içine yazma!
@@ -156,6 +173,15 @@ def veritabani_kur():
             hata_mesaji TEXT
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sinyal_gunlugu (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tarih_saat TEXT,
+            parite TEXT,
+            fiyat REAL,
+            sinyal TEXT
+        )
+    """)
     cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
     if cursor.fetchone() is None:
         cursor.execute("INSERT INTO kasa (id, bakiye) VALUES (1, 10000.0)")
@@ -168,12 +194,15 @@ def veritabani_kur():
         cursor.execute("ALTER TABLE ayarlar ADD COLUMN maks_toplam_pozisyon_yuzde REAL DEFAULT 50.0")
     if "aktif_strateji" not in mevcut_sutunlar:
         cursor.execute("ALTER TABLE ayarlar ADD COLUMN aktif_strateji TEXT DEFAULT 'Klasik ZEYA'")
+    if "aktif_pariteler" not in mevcut_sutunlar:
+        cursor.execute("ALTER TABLE ayarlar ADD COLUMN aktif_pariteler TEXT DEFAULT 'BTCUSDT,ETHUSDT,SOLUSDT'")
 
     cursor.execute("SELECT id FROM ayarlar WHERE id = 1")
     if cursor.fetchone() is None:
         # Varsayılan risk ayarları: %-5 stop-loss, %+10 take-profit, işlem başına %15 sermaye,
-        # kasanın en fazla %50'si aynı anda pozisyonlarda olabilir, varsayılan strateji Klasik ZEYA
-        cursor.execute("INSERT INTO ayarlar (id, stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji) VALUES (1, -5.0, 10.0, 15.0, 50.0, 'Klasik ZEYA')")
+        # kasanın en fazla %50'si aynı anda pozisyonlarda olabilir, varsayılan strateji Klasik ZEYA,
+        # varsayılan pariteler BTC/ETH/SOL (eskisiyle aynı davranış, geriye dönük uyumlu)
+        cursor.execute("INSERT INTO ayarlar (id, stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji, aktif_pariteler) VALUES (1, -5.0, 10.0, 15.0, 50.0, 'Klasik ZEYA', 'BTCUSDT,ETHUSDT,SOLUSDT')")
     conn.commit()
     conn.close()
 
@@ -205,32 +234,35 @@ def oku_ayarlar():
     _varsayilan = {
         "stop_loss_yuzde": -5.0, "take_profit_yuzde": 10.0,
         "pozisyon_buyuklugu_yuzde": 15.0, "maks_toplam_pozisyon_yuzde": 50.0,
-        "aktif_strateji": "Klasik ZEYA",
+        "aktif_strateji": "Klasik ZEYA", "aktif_pariteler": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
     }
     try:
         conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
         cursor = conn.cursor()
-        cursor.execute("SELECT stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji FROM ayarlar WHERE id = 1")
-        sl, tp, pb, maks_toplam, strateji = cursor.fetchone()
+        cursor.execute("SELECT stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji, aktif_pariteler FROM ayarlar WHERE id = 1")
+        sl, tp, pb, maks_toplam, strateji, pariteler_metni = cursor.fetchone()
         conn.close()
+        pariteler = [p.strip() for p in pariteler_metni.split(",") if p.strip()] if pariteler_metni else ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
         return {
             "stop_loss_yuzde": sl,
             "take_profit_yuzde": tp,
             "pozisyon_buyuklugu_yuzde": pb,
             "maks_toplam_pozisyon_yuzde": maks_toplam if maks_toplam is not None else 50.0,
             "aktif_strateji": strateji if strateji is not None else "Klasik ZEYA",
+            "aktif_pariteler": pariteler,
         }
     except Exception as e:
         hata_logla("Ayarlar Okuma", e)
         return _varsayilan
 
-def guncelle_ayarlar(stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji):
+def guncelle_ayarlar(stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji, aktif_pariteler):
     try:
+        pariteler_metni = ",".join(aktif_pariteler) if aktif_pariteler else "BTCUSDT,ETHUSDT,SOLUSDT"
         conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE ayarlar SET stop_loss_yuzde = ?, take_profit_yuzde = ?, pozisyon_buyuklugu_yuzde = ?, maks_toplam_pozisyon_yuzde = ?, aktif_strateji = ? WHERE id = 1",
-            (stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji)
+            "UPDATE ayarlar SET stop_loss_yuzde = ?, take_profit_yuzde = ?, pozisyon_buyuklugu_yuzde = ?, maks_toplam_pozisyon_yuzde = ?, aktif_strateji = ?, aktif_pariteler = ? WHERE id = 1",
+            (stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji, pariteler_metni)
         )
         conn.commit()
         conn.close()
@@ -436,6 +468,49 @@ def yeni_sinyal_ekle(log_dict):
         conn.close()
     except Exception as e:
         hata_logla("Sinyal Deposu Ekleme", e)
+
+def sinyal_gunlugune_ekle(parite, fiyat, sinyal):
+    """YENİ, GENEL sinyal günlüğü: herhangi sayıda pariteyi destekler (eski
+    sinyal_deposu tablosu sadece BTC/ETH/SOL'a göre sabit kodlanmıştı)."""
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        cursor = conn.cursor()
+        su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        cursor.execute(
+            "INSERT INTO sinyal_gunlugu (tarih_saat, parite, fiyat, sinyal) VALUES (?, ?, ?, ?)",
+            (su_an, parite, fiyat, sinyal)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        hata_logla("Sinyal Günlüğü Ekleme", e)
+
+def oku_sinyal_gunlugu(limit=50):
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        df = pd.read_sql_query(
+            f"SELECT tarih_saat AS 'Tarih/Saat', parite AS 'Parite', fiyat AS 'Fiyat', sinyal AS 'Sinyal' FROM sinyal_gunlugu ORDER BY id DESC LIMIT {limit}",
+            conn
+        )
+        conn.close()
+        return df
+    except Exception as e:
+        hata_logla("Sinyal Günlüğü Okuma", e)
+        return pd.DataFrame(columns=['Tarih/Saat', 'Parite', 'Fiyat', 'Sinyal'])
+
+def son_kayitli_fiyat(parite):
+    """Bir paritenin sinyal günlüğüne en son kaydedilen fiyatını döner (tekrarlanan
+    kayıt eklemekten kaçınmak için kullanılır). Kayıt yoksa None döner."""
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        cursor = conn.cursor()
+        cursor.execute("SELECT fiyat FROM sinyal_gunlugu WHERE parite = ? ORDER BY id DESC LIMIT 1", (parite,))
+        res = cursor.fetchone()
+        conn.close()
+        return res[0] if res else None
+    except Exception as e:
+        hata_logla(f"Son Kayıtlı Fiyat ({parite})", e)
+        return None
 
 def binance_veri_al(symbol, interval="15m", limit=100):
     """Binance'in herkese açık (API anahtarı GEREKTİRMEYEN) piyasa verisi uç
@@ -768,37 +843,26 @@ def gercek_backtest_yap(symbol, gun_sayisi=30, strateji_adi="Klasik ZEYA"):
 # 🚀 7/24 BAĞIMSIZ ARKA PLAN MOTORU (AUTOMATED WORKER)
 # ==========================================================
 def kesintisiz_bot_dongusu():
-    """Ön yüzden tamamen bağımsız, sunucuda sonsuza kadar dönecek olan ana motor"""
+    """Ön yüzden tamamen bağımsız, sunucuda sonsuza kadar dönecek olan ana motor.
+    Artık sabit BTC/ETH/SOL yerine, kullanıcının sidebar'dan seçtiği DİNAMİK
+    parite listesini kullanıyor — kaç coin seçilirse seçilsin çalışır."""
     while True:
         try:
-            # 1. Tüm pariteleri analiz et ve gerekiyorsa emir tetikle
-            btc_f, _, _, btc_k, _, _, _, _ = analiz_ve_islem_yapi("BTCUSDT", emir_tetikle=True)
-            eth_f, _, _, eth_k, _, _, _, _ = analiz_ve_islem_yapi("ETHUSDT", emir_tetikle=True)
-            sol_f, _, _, sol_k, _, _, _, _ = analiz_ve_islem_yapi("SOLUSDT", emir_tetikle=True)
-            
-            # 2. Seyir Defterine Günlüğü kaydet
-            su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-            yeni_log = {
-                "Tarih/Saat": su_an,
-                "BTC Fiyat": f"{btc_f:,.2f} USDT",
-                "BTC Sinyal": btc_k,
-                "ETH Fiyat": f"{eth_f:,.2f} USDT",
-                "ETH Sinyal": eth_k,
-                "SOL Fiyat": f"{sol_f:,.2f} USDT",
-                "SOL Sinyal": sol_k
-            }
-            
-            # Veritabanındaki en son kaydı kontrol et, fiyat değiştiyse kaydet
-            conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
-            gecmis = pd.read_sql_query("SELECT btc_fiyat FROM sinyal_deposu ORDER BY id DESC LIMIT 1", conn)
-            conn.close()
-            
-            if gecmis.empty or gecmis.iloc[0]["btc_fiyat"] != yeni_log["BTC Fiyat"]:
-                yeni_sinyal_ekle(yeni_log)
+            aktif_pariteler = oku_ayarlar()["aktif_pariteler"]
+            guncel_fiyatlar = {}
+
+            # 1. Seçili tüm pariteleri analiz et ve gerekiyorsa emir tetikle
+            for parite in aktif_pariteler:
+                fiyat, _, _, karar, _, _, _, _ = analiz_ve_islem_yapi(parite, emir_tetikle=True)
+                guncel_fiyatlar[parite] = fiyat
+
+                # 2. Sinyal günlüğüne kaydet — sadece fiyat değiştiyse (gereksiz kayıt birikmesin)
+                onceki_fiyat = son_kayitli_fiyat(parite)
+                if onceki_fiyat is None or abs(onceki_fiyat - fiyat) > 0.00001:
+                    sinyal_gunlugune_ekle(parite, fiyat, karar)
 
             # 3. Toplam varlığı (kasa + açık pozisyonların güncel değeri) hesaplayıp
             #    varlık geçmişine kaydet. Bu, performans grafiğinin veri kaynağıdır.
-            guncel_fiyatlar = {"BTCUSDT": btc_f, "ETHUSDT": eth_f, "SOLUSDT": sol_f}
             mevcut_bakiye = oku_kasa_bakiyesi()
             tum_pozisyonlar = oku_tum_pozisyonlar()
             pozisyon_degeri = sum(
@@ -829,9 +893,12 @@ arkaplan_motorunu_atesle()
 # ==========================================================
 
 # Ön yüz sadece grafik çizmek ve anlık durumu göstermek için verileri çeker (emir_tetikle=False)
-btc_fiyat, btc_rsi, btc_df, btc_karar, btc_guven, btc_renk, btc_rapor, btc_egim = analiz_ve_islem_yapi("BTCUSDT", emir_tetikle=False)
-eth_fiyat, eth_rsi, eth_df, eth_karar, eth_guven, eth_renk, eth_rapor, eth_egim = analiz_ve_islem_yapi("ETHUSDT", emir_tetikle=False)
-sol_fiyat, sol_rsi, sol_df, sol_karar, sol_guven, sol_renk, sol_rapor, sol_egim = analiz_ve_islem_yapi("SOLUSDT", emir_tetikle=False)
+# Artık sabit BTC/ETH/SOL yerine, kullanıcının seçtiği DİNAMİK parite listesini kullanıyoruz.
+_aktif_pariteler = oku_ayarlar()["aktif_pariteler"]
+_parite_verileri = {}
+for _p in _aktif_pariteler:
+    _parite_verileri[_p] = analiz_ve_islem_yapi(_p, emir_tetikle=False)
+    # Her biri: (fiyat, rsi, df, karar, guven, renk, rapor, egim)
 
 # LOGO VE SIDEBAR TASARIMI
 st.markdown("""
@@ -889,8 +956,17 @@ else:
     st.sidebar.info("✉️ E-posta Bildirimleri: Kapalı (isteğe bağlı)")
 
 st.sidebar.markdown("---")
-st.sidebar.header("🧠 Strateji Seçimi")
+st.sidebar.header("🪙 Parite Seçimi")
 _mevcut_ayarlar = oku_ayarlar()
+_yeni_pariteler = st.sidebar.multiselect(
+    "İzlenecek Coinler", PARITE_SECENEKLERI,
+    default=_mevcut_ayarlar["aktif_pariteler"],
+    format_func=parite_gorunen_isim,
+    help="Botun analiz edip (isteğe bağlı) işlem yapacağı coin listesi. İstediğin kadar ekleyip çıkarabilirsin."
+)
+
+st.sidebar.markdown("---")
+st.sidebar.header("🧠 Strateji Seçimi")
 _strateji_listesi = list(STRATEJILER.keys())
 _mevcut_strateji_index = _strateji_listesi.index(_mevcut_ayarlar["aktif_strateji"]) if _mevcut_ayarlar["aktif_strateji"] in _strateji_listesi else 0
 _yeni_strateji = st.sidebar.selectbox(
@@ -918,36 +994,32 @@ _yeni_pozisyon_buyuklugu = st.sidebar.slider(
 _yeni_maks_toplam_pozisyon = st.sidebar.slider(
     "📊 Toplam Pozisyon Limiti (%)", min_value=10.0, max_value=100.0,
     value=float(_mevcut_ayarlar["maks_toplam_pozisyon_yuzde"]), step=5.0,
-    help="Tüm açık pozisyonların (BTC+ETH+SOL) toplamda kasanın en fazla yüzde kaçını kullanabileceği. Örn: %50 demek, aynı anda en fazla yarı sermaye riske girer."
+    help="Tüm açık pozisyonların (seçtiğin tüm coinler) toplamda kasanın en fazla yüzde kaçını kullanabileceği. Örn: %50 demek, aynı anda en fazla yarı sermaye riske girer."
 )
 if (_yeni_stop_loss != _mevcut_ayarlar["stop_loss_yuzde"]
         or _yeni_take_profit != _mevcut_ayarlar["take_profit_yuzde"]
         or _yeni_pozisyon_buyuklugu != _mevcut_ayarlar["pozisyon_buyuklugu_yuzde"]
         or _yeni_maks_toplam_pozisyon != _mevcut_ayarlar["maks_toplam_pozisyon_yuzde"]
-        or _yeni_strateji != _mevcut_ayarlar["aktif_strateji"]):
-    guncelle_ayarlar(_yeni_stop_loss, _yeni_take_profit, _yeni_pozisyon_buyuklugu, _yeni_maks_toplam_pozisyon, _yeni_strateji)
+        or _yeni_strateji != _mevcut_ayarlar["aktif_strateji"]
+        or set(_yeni_pariteler) != set(_mevcut_ayarlar["aktif_pariteler"])):
+    guncelle_ayarlar(_yeni_stop_loss, _yeni_take_profit, _yeni_pozisyon_buyuklugu, _yeni_maks_toplam_pozisyon, _yeni_strateji, _yeni_pariteler)
     st.sidebar.success("✅ Ayarlar kaydedildi. Arka plan motoru bir sonraki döngüde bu ayarları kullanacak.")
 
-# 3 SÜTUN GÖRSEL PANEL
-col1, col2, col3 = st.columns(3)
+# DİNAMİK GRİD PANEL — kaç parite seçilirse seçilsin, 3'erli satırlar halinde gösterir
+_SATIR_BASINA_SUTUN = 3
+for _i in range(0, len(_aktif_pariteler), _SATIR_BASINA_SUTUN):
+    _bu_satirin_pariteleri = _aktif_pariteler[_i:_i + _SATIR_BASINA_SUTUN]
+    _sutunlar = st.columns(_SATIR_BASINA_SUTUN)
+    for _sutun, _p in zip(_sutunlar, _bu_satirin_pariteleri):
+        _fiyat, _rsi, _df, _karar, _guven, _renk, _rapor, _egim = _parite_verileri[_p]
+        with _sutun:
+            st.metric(label=parite_gorunen_isim(_p), value=f"{_fiyat:,.2f} USDT", delta=f"ML Eğimi: {_egim:.2f}")
+            st.markdown(f"<div style='background-color: #111111; border: 2px solid #D4AF37; padding: 12px; border-radius: 10px; text-align: center;'><span style='color: #888888; font-size: 12px; font-weight: bold;'>ZEYA AI ANLIK DURUM</span><br><span style='color: {_renk}; font-size: 22px; font-weight: bold;'>{_karar}</span><br><span style='color: #D4AF37; font-size: 13px;'>Güven: %{_guven:.1f}</span></div>", unsafe_allow_html=True)
+            st.info(f"🤖 Son Durum: {_rapor}")
+            st.line_chart(_df['close'])
 
-with col1:
-    st.metric(label="🪙 Bitcoin (BTC)", value=f"{btc_fiyat:,.2f} USDT", delta=f"ML Eğimi: {btc_egim:.2f}")
-    st.markdown(f"<div style='background-color: #111111; border: 2px solid #D4AF37; padding: 12px; border-radius: 10px; text-align: center;'><span style='color: #888888; font-size: 12px; font-weight: bold;'>ZEYA AI ANLIK DURUM</span><br><span style='color: {btc_renk}; font-size: 22px; font-weight: bold;'>{btc_karar}</span><br><span style='color: #D4AF37; font-size: 13px;'>Güven: %{btc_guven:.1f}</span></div>", unsafe_allow_html=True)
-    st.info(f"🤖 Son Durum: {btc_rapor}")
-    st.line_chart(btc_df['close'])
-
-with col2:
-    st.metric(label="🔹 Ethereum (ETH)", value=f"{eth_fiyat:,.2f} USDT", delta=f"ML Eğimi: {eth_egim:.2f}")
-    st.markdown(f"<div style='background-color: #111111; border: 2px solid #D4AF37; padding: 12px; border-radius: 10px; text-align: center;'><span style='color: #888888; font-size: 12px; font-weight: bold;'>ZEYA AI ANLIK DURUM</span><br><span style='color: {eth_renk}; font-size: 22px; font-weight: bold;'>{eth_karar}</span><br><span style='color: #D4AF37; font-size: 13px;'>Güven: %{eth_guven:.1f}</span></div>", unsafe_allow_html=True)
-    st.info(f"🤖 Son Durum: {eth_rapor}")
-    st.line_chart(eth_df['close'])
-
-with col3:
-    st.metric(label="☀️ Solana (SOL)", value=f"{sol_fiyat:,.2f} USDT", delta=f"ML Eğimi: {sol_egim:.2f}")
-    st.markdown(f"<div style='background-color: #111111; border: 2px solid #D4AF37; padding: 12px; border-radius: 10px; text-align: center;'><span style='color: #888888; font-size: 12px; font-weight: bold;'>ZEYA AI ANLIK DURUM</span><br><span style='color: {sol_renk}; font-size: 22px; font-weight: bold;'>{sol_karar}</span><br><span style='color: #D4AF37; font-size: 13px;'>Güven: %{sol_guven:.1f}</span></div>", unsafe_allow_html=True)
-    st.info(f"🤖 Son Durum: {sol_rapor}")
-    st.line_chart(sol_df['close'])
+if not _aktif_pariteler:
+    st.warning("Hiç parite seçilmedi. Sidebar'dan en az bir parite seçmelisin.")
 
 st.markdown("---")
 col_wallet, col_news = st.columns(2)
@@ -957,10 +1029,12 @@ with col_wallet:
     canli_kasa_bakiyesi = oku_kasa_bakiyesi()
     st.info(f"💰 Toplam Kasa Bakiyesi: **{canli_kasa_bakiyesi:,.2f} USDT**")
 
-    st.subheader("📈 Gerçek Backtest Sonucu (BTC, son 30 gün)")
+    st.subheader("📈 Gerçek Backtest Sonucu")
+    _backtest_secenekleri = _aktif_pariteler if _aktif_pariteler else ["BTCUSDT"]
+    _backtest_parite = st.selectbox("Backtest için parite seç", _backtest_secenekleri, format_func=parite_gorunen_isim, key="backtest_parite_secici")
     _aktif_strateji_adi = oku_ayarlar()["aktif_strateji"]
-    st.caption(f"Aktif strateji: **{_aktif_strateji_adi}** (sidebar'dan değiştirebilirsin)")
-    bt_sonuc = gercek_backtest_yap("BTCUSDT", gun_sayisi=30, strateji_adi=_aktif_strateji_adi)
+    st.caption(f"Aktif strateji: **{_aktif_strateji_adi}** (sidebar'dan değiştirebilirsin) · Son 30 gün")
+    bt_sonuc = gercek_backtest_yap(_backtest_parite, gun_sayisi=30, strateji_adi=_aktif_strateji_adi)
     if bt_sonuc:
         bt_col1, bt_col2, bt_col3 = st.columns(3)
         bt_col1.metric("Toplam Getiri", f"%{bt_sonuc['toplam_getiri_yuzde']:.2f}")
@@ -970,11 +1044,11 @@ with col_wallet:
     else:
         st.warning("Backtest verisi şu anda hesaplanamadı, birazdan tekrar dene.")
 
-    st.subheader("🥊 Strateji Karşılaştırması (BTC, son 30 gün)")
+    st.subheader(f"🥊 Strateji Karşılaştırması ({parite_gorunen_isim(_backtest_parite)}, son 30 gün)")
     st.caption("Aynı geçmiş veri üzerinde 3 stratejinin nasıl performans gösterdiğinin objektif kıyaslaması — hangisinin senin coin/piyasa koşulunda daha iyi çalıştığını görüp sidebar'dan seçebilirsin.")
     _karsilastirma_satirlari = []
     for _strateji_adi in STRATEJILER.keys():
-        _sonuc = gercek_backtest_yap("BTCUSDT", gun_sayisi=30, strateji_adi=_strateji_adi)
+        _sonuc = gercek_backtest_yap(_backtest_parite, gun_sayisi=30, strateji_adi=_strateji_adi)
         if _sonuc:
             _karsilastirma_satirlari.append({
                 "Strateji": _strateji_adi,
@@ -1017,8 +1091,9 @@ else:
 # 📜 GEÇMİŞ SİNYAL LOG TABLOSU (Doğrudan Arkaplan Motorunun Kaydettiği Yerden Okur)
 st.markdown("---")
 st.header("📜 ZEYA Algoritma Seyir Defteri (7/24 Kesintisiz Hafıza Kayıtları)")
-df_log = oku_sinyal_deposu()
+st.caption("Seçtiğin tüm coinlerin sinyal geçmişi — kaç parite eklersen ekle bu tablo otomatik büyür.")
+df_log = oku_sinyal_gunlugu(limit=50)
 if not df_log.empty:
-    st.dataframe(df_log, use_container_width=True)
+    st.dataframe(df_log, use_container_width=True, hide_index=True)
 else:
     st.info("Arka plan motoru ilk verileri topluyor, tablo birazdan güncellenecektir...")
