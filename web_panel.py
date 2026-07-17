@@ -102,7 +102,12 @@ DB_FILE = "zeya_asıl_hafiza.db"
 
 def veritabani_kur():
     # check_same_thread=False ekledik çünkü arka plan motoru ile ön yüz buraya eşzamanlı erişecek
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+    # WAL modu: SQLite'ın eşzamanlı okuma/yazma isteklerini "database is locked"
+    # hatası vermeden çok daha iyi yönettiği mod. Artık çok sayıda fonksiyon
+    # (bildirimler, hatalar, varlık geçmişi, ayarlar) aynı dosyaya erişiyor,
+    # bu yüzden bu ayar kritik hale geldi.
+    conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS kasa (id INTEGER PRIMARY KEY, bakiye REAL)")
     cursor.execute("CREATE TABLE IF NOT EXISTS pozisyonlar (parite TEXT PRIMARY KEY, giris_fiyati REAL, miktar REAL)")
@@ -176,7 +181,7 @@ veritabani_kur()
 
 def oku_kasa_bakiyesi():
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
         cursor = conn.cursor()
         cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
         bakiye = cursor.fetchone()[0]
@@ -188,7 +193,7 @@ def oku_kasa_bakiyesi():
 
 def guncelle_kasa_bakiyesi(yeni_bakiye):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
         cursor = conn.cursor()
         cursor.execute("UPDATE kasa SET bakiye = ? WHERE id = 1", (yeni_bakiye,))
         conn.commit()
@@ -197,45 +202,64 @@ def guncelle_kasa_bakiyesi(yeni_bakiye):
         hata_logla("Kasa Bakiyesi Güncelleme", e)
 
 def oku_ayarlar():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji FROM ayarlar WHERE id = 1")
-    sl, tp, pb, maks_toplam, strateji = cursor.fetchone()
-    conn.close()
-    return {
-        "stop_loss_yuzde": sl,
-        "take_profit_yuzde": tp,
-        "pozisyon_buyuklugu_yuzde": pb,
-        "maks_toplam_pozisyon_yuzde": maks_toplam if maks_toplam is not None else 50.0,
-        "aktif_strateji": strateji if strateji is not None else "Klasik ZEYA",
+    _varsayilan = {
+        "stop_loss_yuzde": -5.0, "take_profit_yuzde": 10.0,
+        "pozisyon_buyuklugu_yuzde": 15.0, "maks_toplam_pozisyon_yuzde": 50.0,
+        "aktif_strateji": "Klasik ZEYA",
     }
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        cursor = conn.cursor()
+        cursor.execute("SELECT stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji FROM ayarlar WHERE id = 1")
+        sl, tp, pb, maks_toplam, strateji = cursor.fetchone()
+        conn.close()
+        return {
+            "stop_loss_yuzde": sl,
+            "take_profit_yuzde": tp,
+            "pozisyon_buyuklugu_yuzde": pb,
+            "maks_toplam_pozisyon_yuzde": maks_toplam if maks_toplam is not None else 50.0,
+            "aktif_strateji": strateji if strateji is not None else "Klasik ZEYA",
+        }
+    except Exception as e:
+        hata_logla("Ayarlar Okuma", e)
+        return _varsayilan
 
 def guncelle_ayarlar(stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE ayarlar SET stop_loss_yuzde = ?, take_profit_yuzde = ?, pozisyon_buyuklugu_yuzde = ?, maks_toplam_pozisyon_yuzde = ?, aktif_strateji = ? WHERE id = 1",
-        (stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE ayarlar SET stop_loss_yuzde = ?, take_profit_yuzde = ?, pozisyon_buyuklugu_yuzde = ?, maks_toplam_pozisyon_yuzde = ?, aktif_strateji = ? WHERE id = 1",
+            (stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        hata_logla("Ayarlar Güncelleme", e)
 
 def oku_tum_pozisyonlar():
     """Tüm açık pozisyonları döner: [(parite, giris_fiyati, miktar), ...]"""
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT parite, giris_fiyati, miktar FROM pozisyonlar")
-    res = cursor.fetchall()
-    conn.close()
-    return res
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        cursor = conn.cursor()
+        cursor.execute("SELECT parite, giris_fiyati, miktar FROM pozisyonlar")
+        res = cursor.fetchall()
+        conn.close()
+        return res
+    except Exception as e:
+        hata_logla("Tüm Pozisyonları Okuma", e)
+        return []
 
 def varlik_anlik_kaydet(toplam_varlik):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    cursor.execute("INSERT INTO varlik_gecmisi (tarih_saat, toplam_varlik) VALUES (?, ?)", (su_an, toplam_varlik))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        cursor = conn.cursor()
+        su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        cursor.execute("INSERT INTO varlik_gecmisi (tarih_saat, toplam_varlik) VALUES (?, ?)", (su_an, toplam_varlik))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        hata_logla("Varlık Anlık Kaydetme", e)
 
 def telegram_bildirim_gonder(mesaj):
     """Telegram üzerinden bildirim gönderir. Token/Chat ID eksikse veya hata olursa
@@ -271,39 +295,57 @@ def eposta_bildirim_gonder(konu, mesaj):
 def bildirim_ekle(tur, mesaj):
     """Uygulama içi bildirim merkezine yeni bir kayıt ekler. Tamamen bağımsız,
     hiçbir dış servise ihtiyaç duymaz — veriler doğrudan kendi veritabanımızda durur."""
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    cursor.execute("INSERT INTO bildirimler (tarih_saat, tur, mesaj, okundu) VALUES (?, ?, ?, 0)", (su_an, tur, mesaj))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        cursor = conn.cursor()
+        su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        cursor.execute("INSERT INTO bildirimler (tarih_saat, tur, mesaj, okundu) VALUES (?, ?, ?, 0)", (su_an, tur, mesaj))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        hata_logla("Bildirim Ekleme", e)
 
 def oku_bildirimler(limit=30):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    df = pd.read_sql_query(f"SELECT id, tarih_saat, tur, mesaj, okundu FROM bildirimler ORDER BY id DESC LIMIT {limit}", conn)
-    conn.close()
-    return df
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        df = pd.read_sql_query(f"SELECT id, tarih_saat, tur, mesaj, okundu FROM bildirimler ORDER BY id DESC LIMIT {limit}", conn)
+        conn.close()
+        return df
+    except Exception as e:
+        hata_logla("Bildirimleri Okuma", e)
+        return pd.DataFrame(columns=["id", "tarih_saat", "tur", "mesaj", "okundu"])
 
 def okunmamis_bildirim_sayisi():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM bildirimler WHERE okundu = 0")
-    sayi = cursor.fetchone()[0]
-    conn.close()
-    return sayi
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM bildirimler WHERE okundu = 0")
+        sayi = cursor.fetchone()[0]
+        conn.close()
+        return sayi
+    except Exception as e:
+        hata_logla("Okunmamış Bildirim Sayısı", e)
+        return 0
 
 def tum_bildirimleri_okundu_yap():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE bildirimler SET okundu = 1 WHERE okundu = 0")
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE bildirimler SET okundu = 1 WHERE okundu = 0")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        hata_logla("Bildirimleri Okundu Yapma", e)
 
 def oku_varlik_gecmisi():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    df = pd.read_sql_query("SELECT tarih_saat, toplam_varlik FROM varlik_gecmisi ORDER BY id ASC", conn)
-    conn.close()
-    return df
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        df = pd.read_sql_query("SELECT tarih_saat, toplam_varlik FROM varlik_gecmisi ORDER BY id ASC", conn)
+        conn.close()
+        return df
+    except Exception as e:
+        hata_logla("Varlık Geçmişi Okuma", e)
+        return pd.DataFrame(columns=["tarih_saat", "toplam_varlik"])
 
 def hata_logla(kaynak, hata):
     """Her hatayı 3 yere kaydeder: (1) log dosyasına, (2) veritabanına (kalıcı,
@@ -313,7 +355,7 @@ def hata_logla(kaynak, hata):
     detay = traceback.format_exc()
     logger.error(f"[{kaynak}] {hata_metni}\n{detay}")
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
         cursor = conn.cursor()
         su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         cursor.execute(
@@ -328,14 +370,20 @@ def hata_logla(kaynak, hata):
         pass
 
 def oku_hata_kayitlari(limit=20):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    df = pd.read_sql_query(f"SELECT tarih_saat, kaynak, hata_mesaji FROM hata_kayitlari ORDER BY id DESC LIMIT {limit}", conn)
-    conn.close()
-    return df
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        df = pd.read_sql_query(f"SELECT tarih_saat, kaynak, hata_mesaji FROM hata_kayitlari ORDER BY id DESC LIMIT {limit}", conn)
+        conn.close()
+        return df
+    except Exception:
+        # Burada hata_logla ÇAĞIRMIYORUZ çünkü hata_logla zaten bu tabloya
+        # yazmaya çalışıyor — sonsuz döngüye girmemek için sadece log dosyasına yazıyoruz.
+        logger.error("Hata kayıtları okunamadı (muhtemelen tablo henüz oluşmadı).")
+        return pd.DataFrame(columns=["tarih_saat", "kaynak", "hata_mesaji"])
 
 def oku_pozisyon(parite):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
         cursor = conn.cursor()
         cursor.execute("SELECT giris_fiyati, miktar FROM pozisyonlar WHERE parite = ?", (parite,))
         res = cursor.fetchone()
@@ -347,7 +395,7 @@ def oku_pozisyon(parite):
 
 def pozisyon_kaydet(parite, giris_fiyati, miktar):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
         cursor = conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO pozisyonlar (parite, giris_fiyati, miktar) VALUES (?, ?, ?)", (parite, giris_fiyati, miktar))
         conn.commit()
@@ -357,7 +405,7 @@ def pozisyon_kaydet(parite, giris_fiyati, miktar):
 
 def pozisyon_sil(parite):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM pozisyonlar WHERE parite = ?", (parite,))
         conn.commit()
@@ -366,20 +414,28 @@ def pozisyon_sil(parite):
         hata_logla(f"Pozisyon Silme ({parite})", e)
 
 def oku_sinyal_deposu():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    df = pd.read_sql_query("SELECT tarih_saat AS 'Tarih/Saat', btc_fiyat AS 'BTC Fiyat', btc_sinyal AS 'BTC Sinyal', eth_fiyat AS 'ETH Fiyat', eth_sinyal AS 'ETH Sinyal', sol_fiyat AS 'SOL Fiyat', sol_sinyal AS 'SOL Sinyal' FROM sinyal_deposu ORDER BY id DESC LIMIT 15", conn)
-    conn.close()
-    return df
+    _bos_df = pd.DataFrame(columns=['Tarih/Saat', 'BTC Fiyat', 'BTC Sinyal', 'ETH Fiyat', 'ETH Sinyal', 'SOL Fiyat', 'SOL Sinyal'])
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        df = pd.read_sql_query("SELECT tarih_saat AS 'Tarih/Saat', btc_fiyat AS 'BTC Fiyat', btc_sinyal AS 'BTC Sinyal', eth_fiyat AS 'ETH Fiyat', eth_sinyal AS 'ETH Sinyal', sol_fiyat AS 'SOL Fiyat', sol_sinyal AS 'SOL Sinyal' FROM sinyal_deposu ORDER BY id DESC LIMIT 15", conn)
+        conn.close()
+        return df
+    except Exception as e:
+        hata_logla("Sinyal Deposu Okuma", e)
+        return _bos_df
 
 def yeni_sinyal_ekle(log_dict):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO sinyal_deposu (tarih_saat, btc_fiyat, btc_sinyal, eth_fiyat, eth_sinyal, sol_fiyat, sol_sinyal)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (log_dict["Tarih/Saat"], log_dict["BTC Fiyat"], log_dict["BTC Sinyal"], log_dict["ETH Fiyat"], log_dict["ETH Sinyal"], log_dict["SOL Fiyat"], log_dict["SOL Sinyal"]))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO sinyal_deposu (tarih_saat, btc_fiyat, btc_sinyal, eth_fiyat, eth_sinyal, sol_fiyat, sol_sinyal)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (log_dict["Tarih/Saat"], log_dict["BTC Fiyat"], log_dict["BTC Sinyal"], log_dict["ETH Fiyat"], log_dict["ETH Sinyal"], log_dict["SOL Fiyat"], log_dict["SOL Sinyal"]))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        hata_logla("Sinyal Deposu Ekleme", e)
 
 def binance_veri_al(symbol, interval="15m", limit=100):
     """Binance'in herkese açık (API anahtarı GEREKTİRMEYEN) piyasa verisi uç
@@ -733,7 +789,7 @@ def kesintisiz_bot_dongusu():
             }
             
             # Veritabanındaki en son kaydı kontrol et, fiyat değiştiyse kaydet
-            conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+            conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
             gecmis = pd.read_sql_query("SELECT btc_fiyat FROM sinyal_deposu ORDER BY id DESC LIMIT 1", conn)
             conn.close()
             
