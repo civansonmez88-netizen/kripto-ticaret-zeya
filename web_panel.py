@@ -17,6 +17,11 @@ import smtplib
 import logging
 import traceback
 from email.mime.text import MIMEText
+try:
+    import libsql
+    _LIBSQL_MEVCUT = True
+except ImportError:
+    _LIBSQL_MEVCUT = False
 
 # ==========================================================
 # 🛠️ MERKEZİ HATA LOGLAMA SİSTEMİ
@@ -62,6 +67,17 @@ def _anahtar_oku(isim):
         return st.secrets[isim]
     except Exception:
         return os.environ.get(isim, "")
+
+# ==========================================================
+# 🗄️ TURSO KALICI VERİTABANI (Streamlit Cloud'un yerel diski KALICI DEĞİLDİR —
+# uygulama her yeniden başladığında dosya sıfırlanabilir. Turso bulutta kalıcı
+# bir SQLite-uyumlu veritabanı sağlar, böylece bakiye/pozisyon/geçmiş asla kaybolmaz.)
+# .streamlit/secrets.toml dosyasına şunları ekle:
+#   TURSO_DATABASE_URL = "libsql://senin-veritabanin.turso.io"
+#   TURSO_AUTH_TOKEN = "senin_token'ın"
+TURSO_DATABASE_URL = _anahtar_oku("TURSO_DATABASE_URL")
+TURSO_AUTH_TOKEN = _anahtar_oku("TURSO_AUTH_TOKEN")
+TURSO_AKTIF = bool(TURSO_DATABASE_URL and TURSO_AUTH_TOKEN and _LIBSQL_MEVCUT)
 
 BINANCE_API_KEY = _anahtar_oku("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = _anahtar_oku("BINANCE_SECRET_KEY")
@@ -113,18 +129,28 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# 🧠 ÇELİK ZIRHLI SQLITE KALICI HAFIZA MOTORU
+# 🧠 ÇELİK ZIRHLI KALICI HAFIZA MOTORU (Turso varsa bulutta, yoksa yerel SQLite'ta)
 # ==========================================================
 DB_FILE = "zeya_asıl_hafiza.db"
 
+def _db_connect():
+    """TÜM veritabanı bağlantıları bu tek fonksiyondan geçer. Turso bilgileri
+    (secrets.toml) tanımlıysa kalıcı bulut veritabanına bağlanır — uygulama
+    yeniden başlasa bile veriler kaybolmaz. Tanımlı değilse (örn. kendi
+    bilgisayarında test ederken) yerel SQLite dosyasına bağlanır — ama bu,
+    Streamlit Cloud'da KALICI DEĞİLDİR, sadece geliştirme/yedek modudur."""
+    if TURSO_AKTIF:
+        return libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+    else:
+        return sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+
 def veritabani_kur():
-    # check_same_thread=False ekledik çünkü arka plan motoru ile ön yüz buraya eşzamanlı erişecek
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+    conn = _db_connect()
     # WAL modu: SQLite'ın eşzamanlı okuma/yazma isteklerini "database is locked"
-    # hatası vermeden çok daha iyi yönettiği mod. Artık çok sayıda fonksiyon
-    # (bildirimler, hatalar, varlık geçmişi, ayarlar) aynı dosyaya erişiyor,
-    # bu yüzden bu ayar kritik hale geldi.
-    conn.execute("PRAGMA journal_mode=WAL")
+    # hatası vermeden çok daha iyi yönettiği mod — ama SADECE yerel SQLite dosyası
+    # için anlamlıdır; Turso eşzamanlılığı kendi sunucusunda zaten yönetiyor.
+    if not TURSO_AKTIF:
+        conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS kasa (id INTEGER PRIMARY KEY, bakiye REAL)")
     cursor.execute("CREATE TABLE IF NOT EXISTS pozisyonlar (parite TEXT PRIMARY KEY, giris_fiyati REAL, miktar REAL)")
@@ -210,7 +236,7 @@ veritabani_kur()
 
 def oku_kasa_bakiyesi():
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute("SELECT bakiye FROM kasa WHERE id = 1")
         bakiye = cursor.fetchone()[0]
@@ -222,7 +248,7 @@ def oku_kasa_bakiyesi():
 
 def guncelle_kasa_bakiyesi(yeni_bakiye):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute("UPDATE kasa SET bakiye = ? WHERE id = 1", (yeni_bakiye,))
         conn.commit()
@@ -237,7 +263,7 @@ def oku_ayarlar():
         "aktif_strateji": "Klasik ZEYA", "aktif_pariteler": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
     }
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute("SELECT stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji, aktif_pariteler FROM ayarlar WHERE id = 1")
         sl, tp, pb, maks_toplam, strateji, pariteler_metni = cursor.fetchone()
@@ -258,7 +284,7 @@ def oku_ayarlar():
 def guncelle_ayarlar(stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzde, maks_toplam_pozisyon_yuzde, aktif_strateji, aktif_pariteler):
     try:
         pariteler_metni = ",".join(aktif_pariteler) if aktif_pariteler else "BTCUSDT,ETHUSDT,SOLUSDT"
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute(
             "UPDATE ayarlar SET stop_loss_yuzde = ?, take_profit_yuzde = ?, pozisyon_buyuklugu_yuzde = ?, maks_toplam_pozisyon_yuzde = ?, aktif_strateji = ?, aktif_pariteler = ? WHERE id = 1",
@@ -272,7 +298,7 @@ def guncelle_ayarlar(stop_loss_yuzde, take_profit_yuzde, pozisyon_buyuklugu_yuzd
 def oku_tum_pozisyonlar():
     """Tüm açık pozisyonları döner: [(parite, giris_fiyati, miktar), ...]"""
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute("SELECT parite, giris_fiyati, miktar FROM pozisyonlar")
         res = cursor.fetchall()
@@ -284,7 +310,7 @@ def oku_tum_pozisyonlar():
 
 def varlik_anlik_kaydet(toplam_varlik):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         cursor.execute("INSERT INTO varlik_gecmisi (tarih_saat, toplam_varlik) VALUES (?, ?)", (su_an, toplam_varlik))
@@ -328,7 +354,7 @@ def bildirim_ekle(tur, mesaj):
     """Uygulama içi bildirim merkezine yeni bir kayıt ekler. Tamamen bağımsız,
     hiçbir dış servise ihtiyaç duymaz — veriler doğrudan kendi veritabanımızda durur."""
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         cursor.execute("INSERT INTO bildirimler (tarih_saat, tur, mesaj, okundu) VALUES (?, ?, ?, 0)", (su_an, tur, mesaj))
@@ -339,7 +365,7 @@ def bildirim_ekle(tur, mesaj):
 
 def oku_bildirimler(limit=30):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         df = pd.read_sql_query(f"SELECT id, tarih_saat, tur, mesaj, okundu FROM bildirimler ORDER BY id DESC LIMIT {limit}", conn)
         conn.close()
         return df
@@ -349,7 +375,7 @@ def oku_bildirimler(limit=30):
 
 def okunmamis_bildirim_sayisi():
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM bildirimler WHERE okundu = 0")
         sayi = cursor.fetchone()[0]
@@ -361,7 +387,7 @@ def okunmamis_bildirim_sayisi():
 
 def tum_bildirimleri_okundu_yap():
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute("UPDATE bildirimler SET okundu = 1 WHERE okundu = 0")
         conn.commit()
@@ -371,7 +397,7 @@ def tum_bildirimleri_okundu_yap():
 
 def oku_varlik_gecmisi():
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         df = pd.read_sql_query("SELECT tarih_saat, toplam_varlik FROM varlik_gecmisi ORDER BY id ASC", conn)
         conn.close()
         return df
@@ -387,7 +413,7 @@ def hata_logla(kaynak, hata):
     detay = traceback.format_exc()
     logger.error(f"[{kaynak}] {hata_metni}\n{detay}")
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         cursor.execute(
@@ -403,7 +429,7 @@ def hata_logla(kaynak, hata):
 
 def oku_hata_kayitlari(limit=20):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         df = pd.read_sql_query(f"SELECT tarih_saat, kaynak, hata_mesaji FROM hata_kayitlari ORDER BY id DESC LIMIT {limit}", conn)
         conn.close()
         return df
@@ -415,7 +441,7 @@ def oku_hata_kayitlari(limit=20):
 
 def oku_pozisyon(parite):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute("SELECT giris_fiyati, miktar FROM pozisyonlar WHERE parite = ?", (parite,))
         res = cursor.fetchone()
@@ -427,7 +453,7 @@ def oku_pozisyon(parite):
 
 def pozisyon_kaydet(parite, giris_fiyati, miktar):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO pozisyonlar (parite, giris_fiyati, miktar) VALUES (?, ?, ?)", (parite, giris_fiyati, miktar))
         conn.commit()
@@ -437,7 +463,7 @@ def pozisyon_kaydet(parite, giris_fiyati, miktar):
 
 def pozisyon_sil(parite):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM pozisyonlar WHERE parite = ?", (parite,))
         conn.commit()
@@ -448,7 +474,7 @@ def pozisyon_sil(parite):
 def oku_sinyal_deposu():
     _bos_df = pd.DataFrame(columns=['Tarih/Saat', 'BTC Fiyat', 'BTC Sinyal', 'ETH Fiyat', 'ETH Sinyal', 'SOL Fiyat', 'SOL Sinyal'])
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         df = pd.read_sql_query("SELECT tarih_saat AS 'Tarih/Saat', btc_fiyat AS 'BTC Fiyat', btc_sinyal AS 'BTC Sinyal', eth_fiyat AS 'ETH Fiyat', eth_sinyal AS 'ETH Sinyal', sol_fiyat AS 'SOL Fiyat', sol_sinyal AS 'SOL Sinyal' FROM sinyal_deposu ORDER BY id DESC LIMIT 15", conn)
         conn.close()
         return df
@@ -458,7 +484,7 @@ def oku_sinyal_deposu():
 
 def yeni_sinyal_ekle(log_dict):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO sinyal_deposu (tarih_saat, btc_fiyat, btc_sinyal, eth_fiyat, eth_sinyal, sol_fiyat, sol_sinyal)
@@ -473,7 +499,7 @@ def sinyal_gunlugune_ekle(parite, fiyat, sinyal):
     """YENİ, GENEL sinyal günlüğü: herhangi sayıda pariteyi destekler (eski
     sinyal_deposu tablosu sadece BTC/ETH/SOL'a göre sabit kodlanmıştı)."""
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         su_an = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         cursor.execute(
@@ -487,7 +513,7 @@ def sinyal_gunlugune_ekle(parite, fiyat, sinyal):
 
 def oku_sinyal_gunlugu(limit=50):
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         df = pd.read_sql_query(
             f"SELECT tarih_saat AS 'Tarih/Saat', parite AS 'Parite', fiyat AS 'Fiyat', sinyal AS 'Sinyal' FROM sinyal_gunlugu ORDER BY id DESC LIMIT {limit}",
             conn
@@ -502,7 +528,7 @@ def son_kayitli_fiyat(parite):
     """Bir paritenin sinyal günlüğüne en son kaydedilen fiyatını döner (tekrarlanan
     kayıt eklemekten kaçınmak için kullanılır). Kayıt yoksa None döner."""
     try:
-        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=15)
+        conn = _db_connect()
         cursor = conn.cursor()
         cursor.execute("SELECT fiyat FROM sinyal_gunlugu WHERE parite = ? ORDER BY id DESC LIMIT 1", (parite,))
         res = cursor.fetchone()
@@ -954,6 +980,12 @@ if all([SMTP_SUNUCU, SMTP_PORT, SMTP_EPOSTA, SMTP_SIFRE, ALICI_EPOSTA]):
     st.sidebar.success("✉️ E-posta Bildirimleri: AKTİF 🟢")
 else:
     st.sidebar.info("✉️ E-posta Bildirimleri: Kapalı (isteğe bağlı)")
+if TURSO_AKTIF:
+    st.sidebar.success("🗄️ Kalıcı Veritabanı (Turso): AKTİF 🟢")
+elif TURSO_DATABASE_URL or TURSO_AUTH_TOKEN:
+    st.sidebar.error("🗄️ Kalıcı Veritabanı (Turso): Ayar eksik/hatalı ❌ (secrets.toml'u kontrol et)")
+else:
+    st.sidebar.warning("🗄️ Kalıcı Veritabanı: KAPALI — veriler her yeniden başlatmada silinebilir!")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🪙 Parite Seçimi")
