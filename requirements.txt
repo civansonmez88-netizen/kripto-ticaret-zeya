@@ -4,3 +4,4 @@ pandas
 ta
 scikit-learn
 yfinance
+libsql
